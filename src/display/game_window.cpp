@@ -12,18 +12,20 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/vector_angle.hpp>
 
-// --- TUNING FINO (STEERING BEHAVIORS) ---
-const float PERCEPTION_RADIUS = 15.0f; 
-const float SEPARATION_RADIUS = 3.0f;   
-const float MAX_SPEED = 12.0f;          
-const float MAX_FORCE = 0.5f; // Limite da "força de virada" (quanto menor, mais curvas abertas)
+// --- TUNING: BOIDS ÁGEIS ---
+const float PERCEPTION_RADIUS = 10.0f; 
+const float SEPARATION_RADIUS = 2.0f;   
+const float MAX_SPEED = 15.0f;          
+const float MIN_SPEED = 8.0f;
+// ALTERADO: Aumentado de 1.0 para 3.5. Isso permite curvas fechadas.
+const float MAX_FORCE = 3.5f;           
 
-// PESOS (Balanceamento Crítico)
-// Goal (Líder) deve ser dominante para evitar que eles se percam
-const float WEIGHT_GOAL       = 3.5f; 
-const float WEIGHT_SEPARATION = 4.0f; // Alta prioridade para não bater
-const float WEIGHT_ALIGNMENT  = 1.2f; 
-const float WEIGHT_COHESION   = 0.9f; // Baixei a coesão para evitar "bolas" que ignoram o líder
+// PESOS
+const float WEIGHT_SEPARATION = 3.0f;   
+const float WEIGHT_ALIGNMENT  = 1.5f;   
+const float WEIGHT_COHESION   = 2.5f;   
+// ALTERADO: Aumentado de 3.0 para 5.0. Seguir o líder é a prioridade absoluta.
+const float WEIGHT_GOAL       = 5.0f;   
 const float WEIGHT_AVOID_FLOOR= 10.0f; 
 
 // --- ESTRUTURAS ---
@@ -38,9 +40,9 @@ struct Boid {
 
     Boid(glm::vec3 startPos) {
         position = startPos;
-        // Velocidade inicial
         velocity = glm::vec3((float)(rand()%10-5), 0.0f, (float)(rand()%10-5));
         if(glm::length(velocity) < 0.1f) velocity = glm::vec3(0,0,1);
+        velocity = glm::normalize(velocity) * MIN_SPEED;
         
         forwardDirection = glm::normalize(velocity);
         wingAngle = (float)(rand() % 100);
@@ -74,17 +76,25 @@ void FramebufferSizeCallback(GLFWwindow* window, int width, int height) {
 glm::mat4 calculateOrientation(glm::vec3 position, glm::vec3 forwardVector) {
     glm::mat4 model = glm::mat4(1.0f);
     model = glm::translate(model, position);
-    if (glm::length(forwardVector) < 0.01f || std::isnan(forwardVector.x)) forwardVector = glm::vec3(0.0f, 0.0f, 1.0f); 
+
+    if (glm::length(forwardVector) < 0.01f || std::isnan(forwardVector.x)) {
+        forwardVector = glm::vec3(0.0f, 0.0f, 1.0f); 
+    }
+
     glm::vec3 forward = glm::normalize(forwardVector);
     glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
+
     if (abs(glm::dot(forward, up)) > 0.99f) up = glm::vec3(0.0f, 0.0f, 1.0f);
+
     glm::vec3 right = glm::normalize(glm::cross(up, forward));
     glm::vec3 realUp = glm::cross(forward, right);
+
     glm::mat4 rotation(1.0f);
     rotation[0] = glm::vec4(right, 0.0f);
     rotation[1] = glm::vec4(realUp, 0.0f);
     rotation[2] = glm::vec4(forward, 0.0f); 
     rotation[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+
     return model * rotation;
 }
 
@@ -136,20 +146,25 @@ void CreateCommonGeometry() {
     glEnableVertexAttribArray(0);
 }
 
+// --- DESENHO ---
 void DrawBoidParts(const Boid& boid, glm::mat4 baseMatrix, bool isLeader) {
     glBindVertexArray(VAO_Pyramid);
     glm::mat4 model;
     glm::vec3 bodyColor = isLeader ? glm::vec3(1.0f, 0.2f, 0.2f) : glm::vec3(1.0f, 1.0f, 0.0f);
     glm::vec3 wingColor = isLeader ? glm::vec3(1.0f, 0.5f, 0.5f) : glm::vec3(1.0f, 1.0f, 0.5f);
 
+    // Corpo
     model = glm::scale(baseMatrix, glm::vec3(0.5f, 0.5f, 1.5f)); 
     s.setMat4("model", model); s.setVec3("objectColor", bodyColor); glDrawArrays(GL_TRIANGLES, 0, 12);
 
+    // Cabeça
     model = glm::translate(baseMatrix, glm::vec3(0.0f, 0.0f, 0.8f)); 
     model = glm::scale(model, glm::vec3(0.3f, 0.3f, 0.5f));
     s.setMat4("model", model); s.setVec3("objectColor", 1.0f, 0.0f, 0.0f); glDrawArrays(GL_TRIANGLES, 0, 12);
 
+    // Asas
     float wingRot = sin(boid.wingAngle) * 30.0f;
+
     model = glm::translate(baseMatrix, glm::vec3(-0.2f, 0.0f, 0.2f));
     model = glm::rotate(model, glm::radians(wingRot), glm::vec3(0, 0, 1)); 
     model = glm::scale(model, glm::vec3(1.2f, 0.1f, 0.8f));
@@ -163,27 +178,21 @@ void DrawBoidParts(const Boid& boid, glm::mat4 baseMatrix, bool isLeader) {
     s.setMat4("model", model); glDrawArrays(GL_TRIANGLES, 0, 12);
 }
 
-// --- LÓGICA STEERING BEHAVIORS (O CÉREBRO) ---
+// --- LÓGICA DE FLOCKING ---
 
-// Função mágica de Reynolds: Calcula força para atingir um alvo
+glm::vec3 limitVector(glm::vec3 v, float maxVal) {
+    if (glm::length(v) > maxVal) return glm::normalize(v) * maxVal;
+    return v;
+}
+
 glm::vec3 SteerTowards(Boid& b, glm::vec3 target) {
-    glm::vec3 desired = target - b.position; // Vetor para o alvo
+    glm::vec3 desired = target - b.position; 
     float dist = glm::length(desired);
-    
     if (dist == 0) return glm::vec3(0.0f);
 
-    desired = glm::normalize(desired);
+    desired = glm::normalize(desired) * MAX_SPEED;
 
-    // Chegada Suave (Arrival): Se estiver perto, desacelera
-    if (dist < 10.0f) {
-        desired *= (MAX_SPEED * (dist / 10.0f));
-    } else {
-        desired *= MAX_SPEED;
-    }
-
-    glm::vec3 steer = desired - b.velocity; // Fórmula de Reynolds: Steering = Desired - Velocity
-    
-    // Limita a força para eles não virarem instantaneamente (curva suave)
+    glm::vec3 steer = desired - b.velocity; 
     if (glm::length(steer) > MAX_FORCE) {
         steer = glm::normalize(steer) * MAX_FORCE;
     }
@@ -196,81 +205,72 @@ void UpdateFlock(float dt) {
     for (auto& b : flock) {
         b.acceleration = glm::vec3(0.0f);
         
-        glm::vec3 sep(0.0f);
-        glm::vec3 ali(0.0f);
-        glm::vec3 coh(0.0f);
-        int count = 0;
+        glm::vec3 separation(0.0f);
+        glm::vec3 alignment(0.0f);
+        glm::vec3 cohesion(0.0f);
+        int neighbors = 0;
 
         for (const auto& other : flock) {
             if (&b == &other) continue;
             
-            float d = glm::distance(b.position, other.position);
-            
-            if (d > 0 && d < PERCEPTION_RADIUS) {
-                // Alinhamento (Média das velocidades)
-                ali += other.velocity;
+            float dist = glm::distance(b.position, other.position);
+            if (dist < PERCEPTION_RADIUS) {
+                cohesion += other.position;
+                alignment += other.velocity;
                 
-                // Coesão (Média das posições)
-                coh += other.position;
-                
-                // Separação (Vetor contrário se muito perto)
-                if (d < SEPARATION_RADIUS) {
-                    glm::vec3 push = glm::normalize(b.position - other.position);
-                    sep += push / d; // Peso pela distância
+                if (dist < SEPARATION_RADIUS) {
+                    glm::vec3 push = b.position - other.position;
+                    separation += glm::normalize(push) / (dist * dist + 0.01f);
                 }
-                count++;
+                neighbors++;
             }
         }
 
-        if (count > 0) {
-            // Média Alinhamento + Steering
-            ali /= (float)count;
-            ali = glm::normalize(ali) * MAX_SPEED;
-            glm::vec3 steerAli = ali - b.velocity;
-            if(glm::length(steerAli) > MAX_FORCE) steerAli = glm::normalize(steerAli) * MAX_FORCE;
-            
-            // Média Coesão (Ir para o centro) + Steering
-            coh /= (float)count;
-            glm::vec3 steerCoh = SteerTowards(b, coh);
+        if (neighbors > 0) {
+            // Coesão
+            cohesion /= (float)neighbors;
+            glm::vec3 steerCoh = SteerTowards(b, cohesion);
 
-            // Separação (já é vetor de força)
-            glm::vec3 steerSep = sep;
-            if(glm::length(steerSep) > 0) {
-                steerSep = glm::normalize(steerSep) * MAX_SPEED;
-                steerSep -= b.velocity;
-                if(glm::length(steerSep) > MAX_FORCE) steerSep = glm::normalize(steerSep) * MAX_FORCE;
+            // Alinhamento
+            alignment /= (float)neighbors;
+            alignment = glm::normalize(alignment) * MAX_SPEED;
+            glm::vec3 steerAli = alignment - b.velocity;
+            steerAli = limitVector(steerAli, MAX_FORCE);
+
+            // Separação
+            if(glm::length(separation) > 0) {
+                separation = glm::normalize(separation) * MAX_SPEED;
+                separation -= b.velocity;
+                separation = limitVector(separation, MAX_FORCE);
             }
 
-            b.acceleration += steerSep * WEIGHT_SEPARATION;
+            b.acceleration += separation * WEIGHT_SEPARATION;
             b.acceleration += steerAli * WEIGHT_ALIGNMENT;
             b.acceleration += steerCoh * WEIGHT_COHESION;
         }
 
-        // --- FORÇA DO LÍDER (PRIORIDADE MÁXIMA) ---
+        // Objetivo (Líder) - Steer para o líder
         glm::vec3 steerGoal = SteerTowards(b, leaderBoid.position);
         b.acceleration += steerGoal * WEIGHT_GOAL;
 
         // Evitar Chão
         if (b.position.y < 5.0f) {
             glm::vec3 desired = b.velocity;
-            desired.y = MAX_SPEED; // Quer subir com força total
+            desired.y = MAX_SPEED;
             glm::vec3 steerFloor = desired - b.velocity;
             b.acceleration += steerFloor * WEIGHT_AVOID_FLOOR;
         }
 
-        // Atualiza Física
-        b.velocity += b.acceleration * dt;
-        // Limita velocidade final (não deixa passar do Max nem ficar abaixo do Min)
-        float speed = glm::length(b.velocity);
-        if (speed > MAX_SPEED) b.velocity = glm::normalize(b.velocity) * MAX_SPEED;
-        // Velocidade mínima para eles não pararem e caírem
-        if (speed < 2.0f) b.velocity = glm::normalize(b.velocity) * 2.0f; 
+        b.acceleration = limitVector(b.acceleration, MAX_FORCE);
+        b.velocity += b.acceleration * dt * 5.0f; 
+        b.velocity = limitVector(b.velocity, MAX_SPEED);
+        
+        if (glm::length(b.velocity) < MIN_SPEED) 
+             b.velocity = glm::normalize(b.velocity) * MIN_SPEED;
 
         b.position += b.velocity * dt;
         b.wingAngle += b.wingSpeed * dt;
-        
-        if (glm::length(b.velocity) > 0.1f)
-            b.forwardDirection = glm::normalize(b.velocity);
+        b.forwardDirection = glm::normalize(b.velocity);
     }
 }
 
@@ -386,7 +386,6 @@ void GameWindow::LoadContent() {
     leaderBoid.position = glm::vec3(0, 15, 0);
 
     flock.clear();
-    // Spawn inicial de 10 boids
     for(int i = 0; i < 10; i++) {
         float angle = (float)i / 10.0f * 6.28f; 
         glm::vec3 offset(cos(angle)*2.0f, 0.0f, sin(angle)*2.0f);
