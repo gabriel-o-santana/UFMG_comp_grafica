@@ -15,18 +15,23 @@
 // --- TUNING: BOIDS ÁGEIS ---
 const float PERCEPTION_RADIUS = 10.0f; 
 const float SEPARATION_RADIUS = 2.0f;   
-const float MAX_SPEED = 15.0f;          
-const float MIN_SPEED = 8.0f;
-// ALTERADO: Aumentado de 1.0 para 3.5. Isso permite curvas fechadas.
+const float MAX_SPEED = 15.0f;          // Velocidade Máx Bando
+const float MIN_SPEED = 8.0f;           // Velocidade Mín Bando
 const float MAX_FORCE = 3.5f;           
 
 // PESOS
 const float WEIGHT_SEPARATION = 3.0f;   
 const float WEIGHT_ALIGNMENT  = 1.5f;   
 const float WEIGHT_COHESION   = 2.5f;   
-// ALTERADO: Aumentado de 3.0 para 5.0. Seguir o líder é a prioridade absoluta.
 const float WEIGHT_GOAL       = 5.0f;   
 const float WEIGHT_AVOID_FLOOR= 10.0f; 
+
+// --- FÍSICA DO LÍDER (CORRIGIDO E RÁPIDO) ---
+const float LEADER_THRUST = 80.0f;    
+// ALTERADO: Agora é igual ao MAX_SPEED do bando
+const float LEADER_MAX_SPEED = 15.0f; 
+const float LEADER_DAMPING = 0.96f;   
+// ---------------------------------
 
 // --- ESTRUTURAS ---
 
@@ -67,6 +72,14 @@ float lastFrame = 0.0f;
 
 const int SCR_WIDTH = 800;
 const int SCR_HEIGHT = 600;
+
+// Câmera
+int activeCameraMode = 0; 
+glm::vec3 flockCenter(0.0f);
+glm::vec3 flockAverageVelocity(0.0f, 0.0f, 1.0f); 
+const float TOWER_HEIGHT = 12.0f;
+
+glm::vec3 leaderInputDirection(0.0f); // Guarda o input do teclado
 
 void FramebufferSizeCallback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
@@ -131,7 +144,7 @@ void CreateCommonGeometry() {
     glEnableVertexAttribArray(0);
 
     std::vector<float> coneV;
-    int segments = 32; float radius = 4.0f, height = 12.0f;
+    int segments = 32; float radius = 4.0f, height = TOWER_HEIGHT;
     for(int i=0; i<segments; i++) {
         float ang = (float)i/segments * 6.2831f; float nextAng = (float)(i+1)/segments * 6.2831f;
         float x1 = cos(ang)*radius, z1 = sin(ang)*radius; float x2 = cos(nextAng)*radius, z2 = sin(nextAng)*radius;
@@ -153,18 +166,14 @@ void DrawBoidParts(const Boid& boid, glm::mat4 baseMatrix, bool isLeader) {
     glm::vec3 bodyColor = isLeader ? glm::vec3(1.0f, 0.2f, 0.2f) : glm::vec3(1.0f, 1.0f, 0.0f);
     glm::vec3 wingColor = isLeader ? glm::vec3(1.0f, 0.5f, 0.5f) : glm::vec3(1.0f, 1.0f, 0.5f);
 
-    // Corpo
     model = glm::scale(baseMatrix, glm::vec3(0.5f, 0.5f, 1.5f)); 
     s.setMat4("model", model); s.setVec3("objectColor", bodyColor); glDrawArrays(GL_TRIANGLES, 0, 12);
 
-    // Cabeça
     model = glm::translate(baseMatrix, glm::vec3(0.0f, 0.0f, 0.8f)); 
     model = glm::scale(model, glm::vec3(0.3f, 0.3f, 0.5f));
     s.setMat4("model", model); s.setVec3("objectColor", 1.0f, 0.0f, 0.0f); glDrawArrays(GL_TRIANGLES, 0, 12);
 
-    // Asas
     float wingRot = sin(boid.wingAngle) * 30.0f;
-
     model = glm::translate(baseMatrix, glm::vec3(-0.2f, 0.0f, 0.2f));
     model = glm::rotate(model, glm::radians(wingRot), glm::vec3(0, 0, 1)); 
     model = glm::scale(model, glm::vec3(1.2f, 0.1f, 0.8f));
@@ -200,7 +209,32 @@ glm::vec3 SteerTowards(Boid& b, glm::vec3 target) {
 }
 
 void UpdateFlock(float dt) {
+    // --- FÍSICA DO LÍDER (CORRIGIDA) ---
+    if (glm::length(leaderInputDirection) > 0.0f) {
+        leaderBoid.acceleration = glm::normalize(leaderInputDirection) * LEADER_THRUST;
+    } else {
+        leaderBoid.acceleration = glm::vec3(0.0f);
+    }
+    
+    // *** CORREÇÃO AQUI: Adicionado o multiplicador de agilidade * 5.0f ***
+    leaderBoid.velocity += leaderBoid.acceleration * dt * 5.0f; 
+    
+    leaderBoid.velocity *= LEADER_DAMPING; 
+    
+    if (glm::length(leaderBoid.velocity) > LEADER_MAX_SPEED) {
+        leaderBoid.velocity = glm::normalize(leaderBoid.velocity) * LEADER_MAX_SPEED;
+    }
+
+    leaderBoid.position += leaderBoid.velocity * dt;
+    if (glm::length(leaderBoid.velocity) > 0.1f) 
+        leaderBoid.forwardDirection = glm::normalize(leaderBoid.velocity);
     leaderBoid.wingAngle += leaderBoid.wingSpeed * dt;
+    // --- FIM DA FÍSICA DO LÍDER ---
+
+
+    // --- FÍSICA DO BANDO ---
+    glm::vec3 centerSum(0.0f);
+    glm::vec3 velocitySum(0.0f);
 
     for (auto& b : flock) {
         b.acceleration = glm::vec3(0.0f);
@@ -226,43 +260,40 @@ void UpdateFlock(float dt) {
             }
         }
 
+        glm::vec3 steerAli(0.0f), steerCoh(0.0f), steerSep(0.0f);
         if (neighbors > 0) {
-            // Coesão
             cohesion /= (float)neighbors;
-            glm::vec3 steerCoh = SteerTowards(b, cohesion);
+            steerCoh = SteerTowards(b, cohesion);
 
-            // Alinhamento
             alignment /= (float)neighbors;
             alignment = glm::normalize(alignment) * MAX_SPEED;
-            glm::vec3 steerAli = alignment - b.velocity;
+            steerAli = alignment - b.velocity;
             steerAli = limitVector(steerAli, MAX_FORCE);
-
-            // Separação
+            
             if(glm::length(separation) > 0) {
                 separation = glm::normalize(separation) * MAX_SPEED;
-                separation -= b.velocity;
-                separation = limitVector(separation, MAX_FORCE);
+                steerSep = separation - b.velocity;
+                steerSep = limitVector(steerSep, MAX_FORCE);
             }
-
-            b.acceleration += separation * WEIGHT_SEPARATION;
-            b.acceleration += steerAli * WEIGHT_ALIGNMENT;
-            b.acceleration += steerCoh * WEIGHT_COHESION;
         }
 
-        // Objetivo (Líder) - Steer para o líder
         glm::vec3 steerGoal = SteerTowards(b, leaderBoid.position);
-        b.acceleration += steerGoal * WEIGHT_GOAL;
-
-        // Evitar Chão
+        
+        glm::vec3 steerFloor(0.0f);
         if (b.position.y < 5.0f) {
             glm::vec3 desired = b.velocity;
             desired.y = MAX_SPEED;
-            glm::vec3 steerFloor = desired - b.velocity;
-            b.acceleration += steerFloor * WEIGHT_AVOID_FLOOR;
+            steerFloor = desired - b.velocity;
         }
 
+        b.acceleration += steerSep * WEIGHT_SEPARATION;
+        b.acceleration += steerAli * WEIGHT_ALIGNMENT;
+        b.acceleration += steerCoh * WEIGHT_COHESION;
+        b.acceleration += steerGoal * WEIGHT_GOAL;
+        b.acceleration += steerFloor * WEIGHT_AVOID_FLOOR;
+
         b.acceleration = limitVector(b.acceleration, MAX_FORCE);
-        b.velocity += b.acceleration * dt * 5.0f; 
+        b.velocity += b.acceleration * dt * 5.0f; // Multiplicador de agilidade do Bando
         b.velocity = limitVector(b.velocity, MAX_SPEED);
         
         if (glm::length(b.velocity) < MIN_SPEED) 
@@ -271,33 +302,40 @@ void UpdateFlock(float dt) {
         b.position += b.velocity * dt;
         b.wingAngle += b.wingSpeed * dt;
         b.forwardDirection = glm::normalize(b.velocity);
+        
+        centerSum += b.position;
+        velocitySum += b.velocity;
+    }
+
+    // Cálculo Final da Média do Bando (Alvo da Câmera)
+    if (!flock.empty()) {
+        flockCenter = centerSum / (float)flock.size();
+        flockAverageVelocity = velocitySum / (float)flock.size();
+    } else {
+        flockCenter = leaderBoid.position;
+        flockAverageVelocity = leaderBoid.velocity;
     }
 }
 
 // --- INPUT ---
 
 void ProcessInput(GLFWwindow *window) {
-    float leaderSpeed = 8.0f; 
-    glm::vec3 inputDirection(0.0f);
-
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) inputDirection.z -= 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) inputDirection.z += 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) inputDirection.x -= 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) inputDirection.x += 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) inputDirection.y += 1.0f;
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) inputDirection.y -= 1.0f;
+    // Apenas armazena a direção do input para o UpdateFlock()
+    leaderInputDirection = glm::vec3(0.0f);
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) leaderInputDirection.z -= 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) leaderInputDirection.z += 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) leaderInputDirection.x -= 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) leaderInputDirection.x += 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) leaderInputDirection.y += 1.0f;
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) leaderInputDirection.y -= 1.0f;
     
-    if (glm::length(inputDirection) > 0.0f) {
-        leaderBoid.velocity = glm::normalize(inputDirection) * leaderSpeed;
-    } else {
-        leaderBoid.velocity *= 0.95f;
-    }
+    // Câmera
+    if (glfwGetKey(window, GLFW_KEY_0) == GLFW_PRESS) activeCameraMode = 0;
+    if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) activeCameraMode = 1;
+    if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) activeCameraMode = 2;
+    if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS) activeCameraMode = 3;
 
-    leaderBoid.position += leaderBoid.velocity * deltaTime;
-    if (glm::length(leaderBoid.velocity) > 0.1f) 
-        leaderBoid.forwardDirection = glm::normalize(leaderBoid.velocity);
-
-    // Adicionar Boids (+)
+    // Adicionar/Remover Boids
     static bool btnPlus = false;
     if (glfwGetKey(window, GLFW_KEY_EQUAL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_KP_ADD) == GLFW_PRESS) {
         if (!btnPlus) {
@@ -306,7 +344,6 @@ void ProcessInput(GLFWwindow *window) {
         }
     } else btnPlus = false;
 
-    // Remover Boids (-)
     static bool btnMinus = false;
     if (glfwGetKey(window, GLFW_KEY_MINUS) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS) {
         if (!btnMinus) {
@@ -338,19 +375,58 @@ void GameWindow::Render() {
 
     glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 500.0f);
     s.setMat4("projection", projection);
-    glm::mat4 view = glm::lookAt(glm::vec3(0, 40, 80), glm::vec3(0, 0, 0), glm::vec3(0, 1, 0));
+    
+    // Lógica de Câmera (Focada no BANDO)
+    glm::mat4 view;
+    glm::vec3 center = flockCenter; 
+    glm::vec3 up(0.0f, 1.0f, 0.0f); 
+
+    glm::vec3 avgFlockDir = flockAverageVelocity;
+    if (glm::length(avgFlockDir) < 0.1f) 
+        avgFlockDir = glm::vec3(0, 0, 1); 
+    else
+        avgFlockDir = glm::normalize(avgFlockDir);
+
+    switch(activeCameraMode) {
+        case 1: { 
+            glm::vec3 eye = glm::vec3(0.0f, TOWER_HEIGHT + 2.0f, 0.1f); 
+            view = glm::lookAt(eye, center, up);
+            break;
+        }
+        case 2: { 
+            float distance = 40.0f;
+            float height = 12.0f;
+            glm::vec3 eye = center - (avgFlockDir * distance) + glm::vec3(0.0f, height, 0.0f);
+            view = glm::lookAt(eye, center, up);
+            break;
+        }
+        case 3: { 
+            float distance = 40.0f;
+            float height = 5.0f;
+            glm::vec3 rightDir = glm::normalize(glm::cross(avgFlockDir, up)); 
+            glm::vec3 eye = center + (rightDir * distance) + glm::vec3(0.0f, height, 0.0f);
+            view = glm::lookAt(eye, center, up);
+            break;
+        }
+        default: 
+        case 0: { 
+            glm::vec3 eye = glm::vec3(0, 40, 80);
+            view = glm::lookAt(eye, glm::vec3(0,0,0), up);
+            break;
+        }
+    }
     s.setMat4("view", view);
 
+    // Desenha o mundo
     s.setMat4("model", glm::mat4(1.0f));
     s.setVec3("objectColor", 0.2f, 0.4f, 0.2f); 
     glBindVertexArray(VAO_Floor); glDrawArrays(GL_TRIANGLES, 0, 6);
-    
     s.setVec3("objectColor", 0.0f, 0.0f, 0.0f); 
     glBindVertexArray(VAO_Grid); glDrawArrays(GL_LINES, 0, gridVertexCount);
-
     s.setVec3("objectColor", 0.6f, 0.6f, 0.7f); 
     glBindVertexArray(VAO_Cone); glDrawArrays(GL_TRIANGLES, 0, coneVertexCount);
 
+    // Desenha os Atores
     glm::mat4 leaderM = calculateOrientation(leaderBoid.position, leaderBoid.forwardDirection);
     DrawBoidParts(leaderBoid, leaderM, true);
 
@@ -359,9 +435,19 @@ void GameWindow::Render() {
         DrawBoidParts(b, boidM, false);
     }
 
+    // HUD
     ImGui::Begin("Debug");
-    ImGui::Text("Lider Pos: %.1f %.1f %.1f", leaderBoid.position.x, leaderBoid.position.y, leaderBoid.position.z);
+    std::string camMode;
+    switch(activeCameraMode) {
+        case 1: camMode = "Torre (1)"; break;
+        case 2: camMode = "Atras (2)"; break;
+        case 3: camMode = "Lateral (3)"; break;
+        default: camMode = "Debug Fixa (0)"; break;
+    }
+    ImGui::Text("Camera: %s", camMode.c_str());
     ImGui::Text("Boids: %d", (int)flock.size());
+    ImGui::Text("Lider Pos: %.1f %.1f %.1f", leaderBoid.position.x, leaderBoid.position.y, leaderBoid.position.z);
+    ImGui::Text("Bando (Alvo): %.1f %.1f %.1f", flockCenter.x, flockCenter.y, flockCenter.z);
     ImGui::End();
 
     ImGui::Render(); ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
