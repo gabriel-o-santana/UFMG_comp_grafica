@@ -13,22 +13,22 @@
 #include <glm/gtx/vector_angle.hpp>
 
 // --- TUNING: BOIDS ÁGEIS ---
-const float PERCEPTION_RADIUS = 10.0f; 
-const float SEPARATION_RADIUS = 2.0f;   
-const float MAX_SPEED = 14.0f;          
-const float MIN_SPEED = 8.0f;
-const float MAX_FORCE = 2.5f;           
+const float PERCEPTION_RADIUS = 12.0f; 
+const float SEPARATION_RADIUS = 4.0f;   
+const float MAX_SPEED = 10.0f;          
+const float MIN_SPEED = 4.0f;
+const float MAX_FORCE = 3.0f;           
 
 // PESOS
-const float WEIGHT_SEPARATION = 3.0f;   
+const float WEIGHT_SEPARATION = 5.0f;   
 const float WEIGHT_ALIGNMENT  = 1.5f;   
-const float WEIGHT_COHESION   = 2.5f;   
+const float WEIGHT_COHESION   = 1.5f;   
 const float WEIGHT_GOAL       = 5.0f;   
 const float WEIGHT_AVOID_FLOOR= 10.0f; 
 
 // --- FÍSICA DO LÍDER (CORRIGIDO E RÁPIDO) ---
 const float LEADER_THRUST = 80.0f;    
-const float LEADER_MAX_SPEED = 11.0f; 
+const float LEADER_MAX_SPEED = 9.0f; 
 const float LEADER_DAMPING = 0.96f;   
 
 // --- ESTRUTURAS ---
@@ -533,7 +533,7 @@ void GameWindow::LoadContent() {
     leaderBoid.position = glm::vec3(0, 15, 30.0f); // Posição inicial afastada da torre
 
     flock.clear();
-    for(int i = 0; i < 10; i++) {
+    for(int i = 0; i < 15; i++) {
         float angle = (float)i / 10.0f * 6.28f; 
         glm::vec3 offset(cos(angle)*2.0f, 0.0f, sin(angle)*2.0f);
         flock.push_back(Boid(leaderBoid.position + offset));
