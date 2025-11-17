@@ -56,7 +56,7 @@ const float PERCEPTION_RADIUS = 12.0f;
 const float SEPARATION_RADIUS = 4.0f;
 const float MAX_SPEED = 10.0f;
 const float MIN_SPEED = 4.0f;
-const float MAX_FORCE = 2.5f;
+const float MAX_FORCE = 2.0f;
 
 // PESOS
 const float WEIGHT_SEPARATION = 5.0f;
@@ -181,21 +181,7 @@ void CreateCommonGeometry() {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
 
-    // 2. GRID
-    std::vector<float> gridV;
-    float step = 10.0f;
-    for (float i = -size; i <= size; i += step) {
-        gridV.push_back(i); gridV.push_back(0.06f); gridV.push_back(-size);
-        gridV.push_back(i); gridV.push_back(0.06f); gridV.push_back(size);
-        gridV.push_back(-size); gridV.push_back(0.06f); gridV.push_back(i);
-        gridV.push_back(size);  gridV.push_back(0.06f); gridV.push_back(i);
-    }
-    gridVertexCount = gridV.size() / 3;
-    glGenVertexArrays(1, &VAO_Grid); glGenBuffers(1, &VBO_Grid);
-    glBindVertexArray(VAO_Grid); glBindBuffer(GL_ARRAY_BUFFER, VBO_Grid);
-    glBufferData(GL_ARRAY_BUFFER, gridV.size() * sizeof(float), gridV.data(), GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
+
 
     // 3. PIRÂMIDE GENÉRICA (com normais)
     float pyramidVertices[] = {
@@ -737,12 +723,15 @@ void GameWindow::LoadContent() {
     smoothFlockCenter = leaderBoid.position;
 
     flock.clear();
-    for(int i = 0; i < 10; i++) {
+    for(int i = 0; i < 20; i++) {
         float angle = (float)i / 10.0f * 6.28f;
         glm::vec3 offset(cos(angle)*2.0f, 0.0f, sin(angle)*2.0f);
         flock.push_back(Boid(leaderBoid.position + offset));
     }
 
+    flock.push_back(Boid(leaderBoid.position + glm::vec3(rand()%5, rand()%5, rand()%5)));
+
+    
     // --- Cria fullscreen triangle (sky) e programa simples para gradiente azul ---
     const char* skyVS = R"(
         #version 330 core
