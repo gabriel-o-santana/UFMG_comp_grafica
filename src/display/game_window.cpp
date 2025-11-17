@@ -15,8 +15,8 @@
 // --- TUNING: BOIDS ÁGEIS ---
 const float PERCEPTION_RADIUS = 10.0f; 
 const float SEPARATION_RADIUS = 2.0f;   
-const float MAX_SPEED = 15.0f;          // Velocidade Máx Bando
-const float MIN_SPEED = 8.0f;           // Velocidade Mín Bando
+const float MAX_SPEED = 15.0f;          
+const float MIN_SPEED = 8.0f;
 const float MAX_FORCE = 3.5f;           
 
 // PESOS
@@ -30,7 +30,6 @@ const float WEIGHT_AVOID_FLOOR= 10.0f;
 const float LEADER_THRUST = 80.0f;    
 const float LEADER_MAX_SPEED = 15.0f; 
 const float LEADER_DAMPING = 0.96f;   
-// ---------------------------------
 
 // --- ESTRUTURAS ---
 
@@ -76,11 +75,9 @@ const int SCR_HEIGHT = 600;
 int activeCameraMode = 0; 
 glm::vec3 flockCenter(0.0f);
 glm::vec3 flockAverageVelocity(0.0f, 0.0f, 1.0f); 
+const float TOWER_HEIGHT = 80.0f;
 
-// ALTERADO: Aumentado de 12.0f para 80.0f para uma torre MUITO maior
-const float TOWER_HEIGHT = 80.0f; 
-
-glm::vec3 leaderInputDirection(0.0f); 
+glm::vec3 leaderInputDirection(0.0f); // Guarda o input do teclado
 
 void FramebufferSizeCallback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
@@ -112,39 +109,30 @@ glm::mat4 calculateOrientation(glm::vec3 position, glm::vec3 forwardVector) {
     return model * rotation;
 }
 
-// --- GEOMETRIA ---
+// --- GEOMETRIA (COM NORMAIS) ---
 void CreateCommonGeometry() {
-    // 1. CHÃO GIGANTE (com normais)
+    // 1. CHÃO (com normais)
     float size = 200.0f;
-    // Vértices: X, Y, Z,  NormalX, NormalY, NormalZ
-    // A normal do chão é sempre (0, 1, 0) - "para cima"
     float floorVertices[] = {
-         size, 0.0f,  size,  0.0f, 1.0f, 0.0f,
-        -size, 0.0f,  size,  0.0f, 1.0f, 0.0f,
-        -size, 0.0f, -size,  0.0f, 1.0f, 0.0f,
-         
-         size, 0.0f,  size,  0.0f, 1.0f, 0.0f,
-        -size, 0.0f, -size,  0.0f, 1.0f, 0.0f,
-         size, 0.0f, -size,  0.0f, 1.0f, 0.0f
+         size, 0.0f,  size,  0.0f, 1.0f, 0.0f, -size, 0.0f,  size,  0.0f, 1.0f, 0.0f, -size, 0.0f, -size,  0.0f, 1.0f, 0.0f,
+         size, 0.0f,  size,  0.0f, 1.0f, 0.0f, -size, 0.0f, -size,  0.0f, 1.0f, 0.0f,  size, 0.0f, -size,  0.0f, 1.0f, 0.0f
     };
     glGenVertexArrays(1, &VAO_Floor); glGenBuffers(1, &VBO_Floor);
     glBindVertexArray(VAO_Floor); glBindBuffer(GL_ARRAY_BUFFER, VBO_Floor);
     glBufferData(GL_ARRAY_BUFFER, sizeof(floorVertices), floorVertices, GL_STATIC_DRAW);
-    // Posição (layout 0)
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
-    // Normal (layout 1)
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
 
-    // 2. GRID (Não precisa de normais, desenhamos com cor fixa)
+    // 2. GRID
     std::vector<float> gridV;
     float step = 10.0f;
     for (float i = -size; i <= size; i += step) {
-        gridV.push_back(i); gridV.push_back(0.05f); gridV.push_back(-size);
-        gridV.push_back(i); gridV.push_back(0.05f); gridV.push_back(size);
-        gridV.push_back(-size); gridV.push_back(0.05f); gridV.push_back(i);
-        gridV.push_back(size);  gridV.push_back(0.05f); gridV.push_back(i);
+        gridV.push_back(i); gridV.push_back(0.06f); gridV.push_back(-size);
+        gridV.push_back(i); gridV.push_back(0.06f); gridV.push_back(size);
+        gridV.push_back(-size); gridV.push_back(0.06f); gridV.push_back(i);
+        gridV.push_back(size);  gridV.push_back(0.06f); gridV.push_back(i);
     }
     gridVertexCount = gridV.size() / 3;
     glGenVertexArrays(1, &VAO_Grid); glGenBuffers(1, &VBO_Grid);
@@ -154,33 +142,17 @@ void CreateCommonGeometry() {
     glEnableVertexAttribArray(0);
 
     // 3. PIRÂMIDE GENÉRICA (com normais)
-    // As normais são calculadas "para fora" da face
     float pyramidVertices[] = {
-        // Posição            // Normal da Face
-        // Base (Normal 0,0,-1 - olhando para baixo no modelo local)
-        -0.5f, -0.5f, 0.0f,  0.0f, 0.0f, -1.0f,
-         0.5f, -0.5f, 0.0f,  0.0f, 0.0f, -1.0f,
-         0.0f,  0.5f, 0.0f,  0.0f, 0.0f, -1.0f, 
-        // Face 1 (Baixo)
-        -0.5f, -0.5f, 0.0f,  0.0f, -0.87f, 0.5f,
-         0.5f, -0.5f, 0.0f,  0.0f, -0.87f, 0.5f,
-         0.0f,  0.0f, 1.0f,  0.0f, -0.87f, 0.5f, 
-        // Face 2 (Direita)
-         0.5f, -0.5f, 0.0f,  0.87f, 0.0f, 0.5f,
-         0.0f,  0.5f, 0.0f,  0.87f, 0.0f, 0.5f,
-         0.0f,  0.0f, 1.0f,  0.87f, 0.0f, 0.5f, 
-        // Face 3 (Esquerda)
-         0.0f,  0.5f, 0.0f, -0.87f, 0.0f, 0.5f,
-        -0.5f, -0.5f, 0.0f, -0.87f, 0.0f, 0.5f,
-         0.0f,  0.0f, 1.0f, -0.87f, 0.0f, 0.5f  
+        -0.5f, -0.5f, 0.0f,  0.0f, 0.0f, -1.0f,  0.5f, -0.5f, 0.0f,  0.0f, 0.0f, -1.0f,  0.0f,  0.5f, 0.0f,  0.0f, 0.0f, -1.0f, 
+        -0.5f, -0.5f, 0.0f,  0.0f, -0.87f, 0.5f, 0.5f, -0.5f, 0.0f,  0.0f, -0.87f, 0.5f, 0.0f,  0.0f, 1.0f,  0.0f, -0.87f, 0.5f, 
+         0.5f, -0.5f, 0.0f,  0.87f, 0.0f, 0.5f,  0.0f,  0.5f, 0.0f,  0.87f, 0.0f, 0.5f,  0.0f,  0.0f, 1.0f,  0.87f, 0.0f, 0.5f, 
+         0.0f,  0.5f, 0.0f, -0.87f, 0.0f, 0.5f, -0.5f, -0.5f, 0.0f, -0.87f, 0.0f, 0.5f, 0.0f,  0.0f, 1.0f, -0.87f, 0.0f, 0.5f  
     };
     glGenVertexArrays(1, &VAO_Pyramid); glGenBuffers(1, &VBO_Pyramid);
     glBindVertexArray(VAO_Pyramid); glBindBuffer(GL_ARRAY_BUFFER, VBO_Pyramid);
     glBufferData(GL_ARRAY_BUFFER, sizeof(pyramidVertices), pyramidVertices, GL_STATIC_DRAW);
-    // Posição
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
-    // Normal
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
 
@@ -189,66 +161,77 @@ void CreateCommonGeometry() {
     int segments = 32; 
     float radius = 15.0f; // Raio largo
     float height = TOWER_HEIGHT;
-    float slopeY = radius / height; // Componente Y da normal lateral
-    
+    float slopeY = radius / height; 
     for(int i=0; i<segments; i++) {
         float ang = (float)i/segments * 6.2831f; 
         float nextAng = (float)(i+1)/segments * 6.2831f;
         float x1 = cos(ang)*radius, z1 = sin(ang)*radius;
         float x2 = cos(nextAng)*radius, z2 = sin(nextAng)*radius;
-        
-        // Normais para o lado do cone
         glm::vec3 n1 = glm::normalize(glm::vec3(x1, slopeY, z1));
         glm::vec3 n2 = glm::normalize(glm::vec3(x2, slopeY, z2));
-        
-        // Lateral (Pico (normal p/ cima), Base 1, Base 2)
-        coneV.insert(coneV.end(), {0, height, 0, 0, 1, 0});
-        coneV.insert(coneV.end(), {x1, 0, z1, n1.x, n1.y, n1.z});
-        coneV.insert(coneV.end(), {x2, 0, z2, n2.x, n2.y, n2.z});
-        
-        // Base (Normal 0,-1,0 - para baixo)
-        coneV.insert(coneV.end(), {0, 0, 0, 0, -1, 0});
+        coneV.insert(coneV.end(), {0, height, 0,  0, 1, 0});
+        coneV.insert(coneV.end(), {x1, 0, z1,      n1.x, n1.y, n1.z});
+        coneV.insert(coneV.end(), {x2, 0, z2,      n2.x, n2.y, n2.z});
+        coneV.insert(coneV.end(), {0, 0, 0,  0, -1, 0});
         coneV.insert(coneV.end(), {x2, 0, z2, 0, -1, 0});
         coneV.insert(coneV.end(), {x1, 0, z1, 0, -1, 0});
     }
-    coneVertexCount = coneV.size() / 6; // 6 floats por vértice
+    coneVertexCount = coneV.size() / 6;
     glGenVertexArrays(1, &VAO_Cone); glGenBuffers(1, &VBO_Cone);
     glBindVertexArray(VAO_Cone); glBindBuffer(GL_ARRAY_BUFFER, VBO_Cone);
     glBufferData(GL_ARRAY_BUFFER, coneV.size() * sizeof(float), coneV.data(), GL_STATIC_DRAW);
-    // Posição
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
-    // Normal
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
 }
 
-// --- DESENHO ---
-void DrawBoidParts(const Boid& boid, glm::mat4 baseMatrix, bool isLeader) {
+// --- DESENHO (CORRIGIDO) ---
+// Adicionamos 'bool useLighting' para controlar as cores
+void DrawBoidParts(const Boid& boid, glm::mat4 baseMatrix, bool isLeader, bool useLighting) {
     glBindVertexArray(VAO_Pyramid);
     glm::mat4 model;
-    glm::vec3 bodyColor = isLeader ? glm::vec3(1.0f, 0.2f, 0.2f) : glm::vec3(1.0f, 1.0f, 0.0f);
-    glm::vec3 wingColor = isLeader ? glm::vec3(1.0f, 0.5f, 0.5f) : glm::vec3(1.0f, 1.0f, 0.5f);
-
+    
+    // --- CORPO ---
+    if (useLighting) {
+        glm::vec3 bodyColor = isLeader ? glm::vec3(1.0f, 0.2f, 0.2f) : glm::vec3(1.0f, 1.0f, 0.0f);
+        s.setVec3("objectColor", bodyColor);
+    }
     model = glm::scale(baseMatrix, glm::vec3(0.5f, 0.5f, 1.5f)); 
-    s.setMat4("model", model); s.setVec3("objectColor", bodyColor); glDrawArrays(GL_TRIANGLES, 0, 12);
+    s.setMat4("model", model);
+    glDrawArrays(GL_TRIANGLES, 0, 12);
 
+    // --- CABEÇA ---
+    if (useLighting) {
+        s.setVec3("objectColor", 1.0f, 0.0f, 0.0f); // Vermelho
+    }
     model = glm::translate(baseMatrix, glm::vec3(0.0f, 0.0f, 0.8f)); 
     model = glm::scale(model, glm::vec3(0.3f, 0.3f, 0.5f));
-    s.setMat4("model", model); s.setVec3("objectColor", 1.0f, 0.0f, 0.0f); glDrawArrays(GL_TRIANGLES, 0, 12);
+    s.setMat4("model", model);
+    glDrawArrays(GL_TRIANGLES, 0, 12);
 
+    // --- ASAS ---
+    if (useLighting) {
+        glm::vec3 wingColor = isLeader ? glm::vec3(1.0f, 0.5f, 0.5f) : glm::vec3(1.0f, 1.0f, 0.5f);
+        s.setVec3("objectColor", wingColor);
+    }
     float wingRot = sin(boid.wingAngle) * 30.0f;
+
+    // Asa Esquerda
     model = glm::translate(baseMatrix, glm::vec3(-0.2f, 0.0f, 0.2f));
     model = glm::rotate(model, glm::radians(wingRot), glm::vec3(0, 0, 1)); 
     model = glm::scale(model, glm::vec3(1.2f, 0.1f, 0.8f));
     model = glm::rotate(model, glm::radians(90.0f), glm::vec3(0,0,1)); 
-    s.setMat4("model", model); s.setVec3("objectColor", wingColor); glDrawArrays(GL_TRIANGLES, 0, 12);
+    s.setMat4("model", model);
+    glDrawArrays(GL_TRIANGLES, 0, 12);
 
+    // Asa Direita
     model = glm::translate(baseMatrix, glm::vec3(0.2f, 0.0f, 0.2f));
     model = glm::rotate(model, glm::radians(-wingRot), glm::vec3(0, 0, 1)); 
     model = glm::scale(model, glm::vec3(1.2f, 0.1f, 0.8f));
     model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0,0,1));
-    s.setMat4("model", model); glDrawArrays(GL_TRIANGLES, 0, 12);
+    s.setMat4("model", model);
+    glDrawArrays(GL_TRIANGLES, 0, 12);
 }
 
 // --- LÓGICA DE FLOCKING ---
@@ -273,21 +256,17 @@ glm::vec3 SteerTowards(Boid& b, glm::vec3 target) {
 }
 
 void UpdateFlock(float dt) {
-    // --- FÍSICA DO LÍDER ---
+    // --- FÍSICA DO LÍDER (MOVIMENTO SUAVE E RÁPIDO) ---
     if (glm::length(leaderInputDirection) > 0.0f) {
         leaderBoid.acceleration = glm::normalize(leaderInputDirection) * LEADER_THRUST;
     } else {
         leaderBoid.acceleration = glm::vec3(0.0f);
     }
-    
-    leaderBoid.velocity += leaderBoid.acceleration * dt * 5.0f; // Multiplicador de agilidade
-    
+    leaderBoid.velocity += leaderBoid.acceleration * dt * 5.0f; 
     leaderBoid.velocity *= LEADER_DAMPING; 
-    
     if (glm::length(leaderBoid.velocity) > LEADER_MAX_SPEED) {
         leaderBoid.velocity = glm::normalize(leaderBoid.velocity) * LEADER_MAX_SPEED;
     }
-
     leaderBoid.position += leaderBoid.velocity * dt;
     if (glm::length(leaderBoid.velocity) > 0.1f) 
         leaderBoid.forwardDirection = glm::normalize(leaderBoid.velocity);
@@ -301,20 +280,15 @@ void UpdateFlock(float dt) {
 
     for (auto& b : flock) {
         b.acceleration = glm::vec3(0.0f);
-        
-        glm::vec3 separation(0.0f);
-        glm::vec3 alignment(0.0f);
-        glm::vec3 cohesion(0.0f);
+        glm::vec3 separation(0.0f), alignment(0.0f), cohesion(0.0f);
         int neighbors = 0;
 
         for (const auto& other : flock) {
             if (&b == &other) continue;
-            
             float dist = glm::distance(b.position, other.position);
             if (dist < PERCEPTION_RADIUS) {
                 cohesion += other.position;
                 alignment += other.velocity;
-                
                 if (dist < SEPARATION_RADIUS) {
                     glm::vec3 push = b.position - other.position;
                     separation += glm::normalize(push) / (dist * dist + 0.01f);
@@ -327,12 +301,10 @@ void UpdateFlock(float dt) {
         if (neighbors > 0) {
             cohesion /= (float)neighbors;
             steerCoh = SteerTowards(b, cohesion);
-
             alignment /= (float)neighbors;
             alignment = glm::normalize(alignment) * MAX_SPEED;
             steerAli = alignment - b.velocity;
             steerAli = limitVector(steerAli, MAX_FORCE);
-            
             if(glm::length(separation) > 0) {
                 separation = glm::normalize(separation) * MAX_SPEED;
                 steerSep = separation - b.velocity;
@@ -341,7 +313,6 @@ void UpdateFlock(float dt) {
         }
 
         glm::vec3 steerGoal = SteerTowards(b, leaderBoid.position);
-        
         glm::vec3 steerFloor(0.0f);
         if (b.position.y < 5.0f) {
             glm::vec3 desired = b.velocity;
@@ -356,7 +327,7 @@ void UpdateFlock(float dt) {
         b.acceleration += steerFloor * WEIGHT_AVOID_FLOOR;
 
         b.acceleration = limitVector(b.acceleration, MAX_FORCE);
-        b.velocity += b.acceleration * dt * 5.0f; // Multiplicador de agilidade do Bando
+        b.velocity += b.acceleration * dt * 5.0f; 
         b.velocity = limitVector(b.velocity, MAX_SPEED);
         
         if (glm::length(b.velocity) < MIN_SPEED) 
@@ -391,13 +362,11 @@ void ProcessInput(GLFWwindow *window) {
     if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) leaderInputDirection.y += 1.0f;
     if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) leaderInputDirection.y -= 1.0f;
     
-    // Câmera
     if (glfwGetKey(window, GLFW_KEY_0) == GLFW_PRESS) activeCameraMode = 0;
     if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) activeCameraMode = 1;
     if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) activeCameraMode = 2;
     if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS) activeCameraMode = 3;
 
-    // Adicionar/Remover Boids
     static bool btnPlus = false;
     if (glfwGetKey(window, GLFW_KEY_EQUAL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_KP_ADD) == GLFW_PRESS) {
         if (!btnPlus) {
@@ -433,11 +402,10 @@ void GameWindow::Render() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
-    
-    // Ativa o shader e define as luzes
     s.use();
-    s.setVec3("lightColor", 1.0f, 1.0f, 1.0f); // Luz branca
-    s.setVec3("lightPos", 0.0f, 150.0f, 100.0f); // Posição do "sol" (alto, um pouco à frente)
+
+    s.setVec3("lightColor", 1.0f, 1.0f, 1.0f);
+    s.setVec3("lightPos", 0.0f, 150.0f, 100.0f); 
 
     glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 500.0f);
     s.setMat4("projection", projection);
@@ -445,12 +413,9 @@ void GameWindow::Render() {
     glm::mat4 view;
     glm::vec3 center = flockCenter; 
     glm::vec3 up(0.0f, 1.0f, 0.0f); 
-
     glm::vec3 avgFlockDir = flockAverageVelocity;
-    if (glm::length(avgFlockDir) < 0.1f) 
-        avgFlockDir = glm::vec3(0, 0, 1); 
-    else
-        avgFlockDir = glm::normalize(avgFlockDir);
+    if (glm::length(avgFlockDir) < 0.1f) avgFlockDir = glm::vec3(0, 0, 1); 
+    else avgFlockDir = glm::normalize(avgFlockDir);
 
     switch(activeCameraMode) {
         case 1: { 
@@ -483,30 +448,53 @@ void GameWindow::Render() {
     s.setMat4("view", view);
 
     // --- Desenha o mundo ---
+    s.setBool("useLighting", true); 
     s.setMat4("model", glm::mat4(1.0f));
     s.setVec3("objectColor", 0.2f, 0.4f, 0.2f); 
     glBindVertexArray(VAO_Floor); glDrawArrays(GL_TRIANGLES, 0, 6);
     
-    // O Grid não tem normais, então damos uma cor pura (sem luz)
-    // Para fazer isso, vamos "desligar" a luz para ele, enviando uma cor de luz preta
-    s.setVec3("lightColor", 0.0f, 0.0f, 0.0f); // Luz apagada
-    s.setVec3("objectColor", 0.0f, 0.0f, 0.0f); // Linhas Pretas
-    glBindVertexArray(VAO_Grid); glDrawArrays(GL_LINES, 0, gridVertexCount);
-    
-    // "Acende" a luz novamente para o resto da cena
-    s.setVec3("lightColor", 1.0f, 1.0f, 1.0f); 
-
-    // Torre (agora reage à luz)
     s.setVec3("objectColor", 0.6f, 0.6f, 0.7f); 
     glBindVertexArray(VAO_Cone); glDrawArrays(GL_TRIANGLES, 0, coneVertexCount);
 
-    // --- Desenha os Atores ---
-    glm::mat4 leaderM = calculateOrientation(leaderBoid.position, leaderBoid.forwardDirection);
-    DrawBoidParts(leaderBoid, leaderM, true);
+    s.setBool("useLighting", false); // Desliga luz para o grid
+    s.setVec3("objectColor", 0.0f, 0.0f, 0.0f); 
+    glBindVertexArray(VAO_Grid); glDrawArrays(GL_LINES, 0, gridVertexCount);
+    // --- Fim do mundo ---
 
+
+    // --- Desenha os Atores (COM SOMBRAS) ---
+
+    // 1. Sombra do Líder
+    glm::vec3 shadowPos = leaderBoid.position;
+    shadowPos.y = 0.05f; 
+    glm::mat4 shadowMatrix = calculateOrientation(shadowPos, leaderBoid.forwardDirection);
+    shadowMatrix = glm::scale(shadowMatrix, glm::vec3(1.0f, 0.05f, 1.0f));
+    
+    s.setBool("useLighting", false);
+    s.setVec3("objectColor", 0.0f, 0.0f, 0.0f); // Sombra preta
+    DrawBoidParts(leaderBoid, shadowMatrix, true, false); // NOVO: Passa 'false' para useLighting
+
+    // 2. Líder Real
+    s.setBool("useLighting", true); 
+    glm::mat4 leaderM = calculateOrientation(leaderBoid.position, leaderBoid.forwardDirection);
+    DrawBoidParts(leaderBoid, leaderM, true, true); // NOVO: Passa 'true' para useLighting
+
+    // 3. Sombras e Boids do Bando
     for (const auto& b : flock) {
+        // Sombra
+        shadowPos = b.position;
+        shadowPos.y = 0.05f;
+        shadowMatrix = calculateOrientation(shadowPos, b.forwardDirection);
+        shadowMatrix = glm::scale(shadowMatrix, glm::vec3(1.0f, 0.05f, 1.0f));
+        
+        s.setBool("useLighting", false);
+        s.setVec3("objectColor", 0.0f, 0.0f, 0.0f);
+        DrawBoidParts(b, shadowMatrix, false, false); // NOVO: Passa 'false'
+
+        // Boid Real
+        s.setBool("useLighting", true);
         glm::mat4 boidM = calculateOrientation(b.position, b.forwardDirection);
-        DrawBoidParts(b, boidM, false);
+        DrawBoidParts(b, boidM, false, true); // NOVO: Passa 'true'
     }
 
     // HUD
@@ -540,10 +528,10 @@ void GameWindow::LoadContent() {
     IMGUI_CHECKVERSION(); ImGui::CreateContext(); ImGui_ImplGlfw_InitForOpenGL(windowHandle, true); ImGui_ImplOpenGL3_Init("#version 330");
     
     s = Shader::LoadShader("resources/shaders/testing.vs", "resources/shaders/testing.fs");
-    CreateCommonGeometry(); // Chama a função que usa TOWER_HEIGHT para construir a torre
+    CreateCommonGeometry();
     glEnable(GL_DEPTH_TEST);
     
-    leaderBoid.position = glm::vec3(0, 15, 0);
+    leaderBoid.position = glm::vec3(0, 15, 30.0f); // Posição inicial afastada da torre
 
     flock.clear();
     for(int i = 0; i < 10; i++) {
