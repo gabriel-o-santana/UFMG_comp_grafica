@@ -15,9 +15,9 @@
 // --- TUNING: BOIDS ÁGEIS ---
 const float PERCEPTION_RADIUS = 10.0f; 
 const float SEPARATION_RADIUS = 2.0f;   
-const float MAX_SPEED = 15.0f;          
+const float MAX_SPEED = 14.0f;          
 const float MIN_SPEED = 8.0f;
-const float MAX_FORCE = 3.5f;           
+const float MAX_FORCE = 2.5f;           
 
 // PESOS
 const float WEIGHT_SEPARATION = 3.0f;   
@@ -28,7 +28,7 @@ const float WEIGHT_AVOID_FLOOR= 10.0f;
 
 // --- FÍSICA DO LÍDER (CORRIGIDO E RÁPIDO) ---
 const float LEADER_THRUST = 80.0f;    
-const float LEADER_MAX_SPEED = 15.0f; 
+const float LEADER_MAX_SPEED = 11.0f; 
 const float LEADER_DAMPING = 0.96f;   
 
 // --- ESTRUTURAS ---
@@ -187,12 +187,11 @@ void CreateCommonGeometry() {
 }
 
 // --- DESENHO (CORRIGIDO) ---
-// Adicionamos 'bool useLighting' para controlar as cores
 void DrawBoidParts(const Boid& boid, glm::mat4 baseMatrix, bool isLeader, bool useLighting) {
     glBindVertexArray(VAO_Pyramid);
     glm::mat4 model;
     
-    // --- CORPO ---
+    // Define as cores apenas se a iluminação estiver ligada
     if (useLighting) {
         glm::vec3 bodyColor = isLeader ? glm::vec3(1.0f, 0.2f, 0.2f) : glm::vec3(1.0f, 1.0f, 0.0f);
         s.setVec3("objectColor", bodyColor);
@@ -201,7 +200,6 @@ void DrawBoidParts(const Boid& boid, glm::mat4 baseMatrix, bool isLeader, bool u
     s.setMat4("model", model);
     glDrawArrays(GL_TRIANGLES, 0, 12);
 
-    // --- CABEÇA ---
     if (useLighting) {
         s.setVec3("objectColor", 1.0f, 0.0f, 0.0f); // Vermelho
     }
@@ -210,14 +208,13 @@ void DrawBoidParts(const Boid& boid, glm::mat4 baseMatrix, bool isLeader, bool u
     s.setMat4("model", model);
     glDrawArrays(GL_TRIANGLES, 0, 12);
 
-    // --- ASAS ---
+    // Asas
     if (useLighting) {
         glm::vec3 wingColor = isLeader ? glm::vec3(1.0f, 0.5f, 0.5f) : glm::vec3(1.0f, 1.0f, 0.5f);
         s.setVec3("objectColor", wingColor);
     }
     float wingRot = sin(boid.wingAngle) * 30.0f;
 
-    // Asa Esquerda
     model = glm::translate(baseMatrix, glm::vec3(-0.2f, 0.0f, 0.2f));
     model = glm::rotate(model, glm::radians(wingRot), glm::vec3(0, 0, 1)); 
     model = glm::scale(model, glm::vec3(1.2f, 0.1f, 0.8f));
@@ -225,7 +222,6 @@ void DrawBoidParts(const Boid& boid, glm::mat4 baseMatrix, bool isLeader, bool u
     s.setMat4("model", model);
     glDrawArrays(GL_TRIANGLES, 0, 12);
 
-    // Asa Direita
     model = glm::translate(baseMatrix, glm::vec3(0.2f, 0.0f, 0.2f));
     model = glm::rotate(model, glm::radians(-wingRot), glm::vec3(0, 0, 1)); 
     model = glm::scale(model, glm::vec3(1.2f, 0.1f, 0.8f));
@@ -262,7 +258,7 @@ void UpdateFlock(float dt) {
     } else {
         leaderBoid.acceleration = glm::vec3(0.0f);
     }
-    leaderBoid.velocity += leaderBoid.acceleration * dt * 5.0f; 
+    leaderBoid.velocity += leaderBoid.acceleration * dt * 5.0f; // Multiplicador de agilidade
     leaderBoid.velocity *= LEADER_DAMPING; 
     if (glm::length(leaderBoid.velocity) > LEADER_MAX_SPEED) {
         leaderBoid.velocity = glm::normalize(leaderBoid.velocity) * LEADER_MAX_SPEED;
@@ -282,7 +278,6 @@ void UpdateFlock(float dt) {
         b.acceleration = glm::vec3(0.0f);
         glm::vec3 separation(0.0f), alignment(0.0f), cohesion(0.0f);
         int neighbors = 0;
-
         for (const auto& other : flock) {
             if (&b == &other) continue;
             float dist = glm::distance(b.position, other.position);
@@ -362,11 +357,13 @@ void ProcessInput(GLFWwindow *window) {
     if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) leaderInputDirection.y += 1.0f;
     if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) leaderInputDirection.y -= 1.0f;
     
+    // Câmera
     if (glfwGetKey(window, GLFW_KEY_0) == GLFW_PRESS) activeCameraMode = 0;
     if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) activeCameraMode = 1;
     if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) activeCameraMode = 2;
     if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS) activeCameraMode = 3;
 
+    // Adicionar Boids (+)
     static bool btnPlus = false;
     if (glfwGetKey(window, GLFW_KEY_EQUAL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_KP_ADD) == GLFW_PRESS) {
         if (!btnPlus) {
@@ -375,6 +372,7 @@ void ProcessInput(GLFWwindow *window) {
         }
     } else btnPlus = false;
 
+    // Remover Boids (-)
     static bool btnMinus = false;
     if (glfwGetKey(window, GLFW_KEY_MINUS) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS) {
         if (!btnMinus) {
@@ -449,6 +447,7 @@ void GameWindow::Render() {
 
     // --- Desenha o mundo ---
     s.setBool("useLighting", true); 
+    
     s.setMat4("model", glm::mat4(1.0f));
     s.setVec3("objectColor", 0.2f, 0.4f, 0.2f); 
     glBindVertexArray(VAO_Floor); glDrawArrays(GL_TRIANGLES, 0, 6);
@@ -456,7 +455,7 @@ void GameWindow::Render() {
     s.setVec3("objectColor", 0.6f, 0.6f, 0.7f); 
     glBindVertexArray(VAO_Cone); glDrawArrays(GL_TRIANGLES, 0, coneVertexCount);
 
-    s.setBool("useLighting", false); // Desliga luz para o grid
+    s.setBool("useLighting", false); 
     s.setVec3("objectColor", 0.0f, 0.0f, 0.0f); 
     glBindVertexArray(VAO_Grid); glDrawArrays(GL_LINES, 0, gridVertexCount);
     // --- Fim do mundo ---
@@ -471,13 +470,13 @@ void GameWindow::Render() {
     shadowMatrix = glm::scale(shadowMatrix, glm::vec3(1.0f, 0.05f, 1.0f));
     
     s.setBool("useLighting", false);
-    s.setVec3("objectColor", 0.0f, 0.0f, 0.0f); // Sombra preta
-    DrawBoidParts(leaderBoid, shadowMatrix, true, false); // NOVO: Passa 'false' para useLighting
+    s.setVec3("objectColor", 0.0f, 0.0f, 0.0f); 
+    DrawBoidParts(leaderBoid, shadowMatrix, true, false); 
 
     // 2. Líder Real
     s.setBool("useLighting", true); 
     glm::mat4 leaderM = calculateOrientation(leaderBoid.position, leaderBoid.forwardDirection);
-    DrawBoidParts(leaderBoid, leaderM, true, true); // NOVO: Passa 'true' para useLighting
+    DrawBoidParts(leaderBoid, leaderM, true, true); 
 
     // 3. Sombras e Boids do Bando
     for (const auto& b : flock) {
@@ -489,12 +488,12 @@ void GameWindow::Render() {
         
         s.setBool("useLighting", false);
         s.setVec3("objectColor", 0.0f, 0.0f, 0.0f);
-        DrawBoidParts(b, shadowMatrix, false, false); // NOVO: Passa 'false'
+        DrawBoidParts(b, shadowMatrix, false, false); 
 
         // Boid Real
         s.setBool("useLighting", true);
         glm::mat4 boidM = calculateOrientation(b.position, b.forwardDirection);
-        DrawBoidParts(b, boidM, false, true); // NOVO: Passa 'true'
+        DrawBoidParts(b, boidM, false, true); 
     }
 
     // HUD
