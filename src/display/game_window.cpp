@@ -28,7 +28,6 @@ const float WEIGHT_AVOID_FLOOR= 10.0f;
 
 // --- FÍSICA DO LÍDER (CORRIGIDO E RÁPIDO) ---
 const float LEADER_THRUST = 80.0f;    
-// ALTERADO: Agora é igual ao MAX_SPEED do bando
 const float LEADER_MAX_SPEED = 15.0f; 
 const float LEADER_DAMPING = 0.96f;   
 // ---------------------------------
@@ -77,9 +76,11 @@ const int SCR_HEIGHT = 600;
 int activeCameraMode = 0; 
 glm::vec3 flockCenter(0.0f);
 glm::vec3 flockAverageVelocity(0.0f, 0.0f, 1.0f); 
-const float TOWER_HEIGHT = 12.0f;
 
-glm::vec3 leaderInputDirection(0.0f); // Guarda o input do teclado
+// ALTERADO: Aumentado de 12.0f para 80.0f para uma torre MUITO maior
+const float TOWER_HEIGHT = 80.0f; 
+
+glm::vec3 leaderInputDirection(0.0f); 
 
 void FramebufferSizeCallback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
@@ -113,14 +114,30 @@ glm::mat4 calculateOrientation(glm::vec3 position, glm::vec3 forwardVector) {
 
 // --- GEOMETRIA ---
 void CreateCommonGeometry() {
+    // 1. CHÃO GIGANTE (com normais)
     float size = 200.0f;
-    float floorVertices[] = { size, 0.0f, size, -size, 0.0f, size, -size, 0.0f, -size, size, 0.0f, size, -size, 0.0f, -size, size, 0.0f, -size };
+    // Vértices: X, Y, Z,  NormalX, NormalY, NormalZ
+    // A normal do chão é sempre (0, 1, 0) - "para cima"
+    float floorVertices[] = {
+         size, 0.0f,  size,  0.0f, 1.0f, 0.0f,
+        -size, 0.0f,  size,  0.0f, 1.0f, 0.0f,
+        -size, 0.0f, -size,  0.0f, 1.0f, 0.0f,
+         
+         size, 0.0f,  size,  0.0f, 1.0f, 0.0f,
+        -size, 0.0f, -size,  0.0f, 1.0f, 0.0f,
+         size, 0.0f, -size,  0.0f, 1.0f, 0.0f
+    };
     glGenVertexArrays(1, &VAO_Floor); glGenBuffers(1, &VBO_Floor);
     glBindVertexArray(VAO_Floor); glBindBuffer(GL_ARRAY_BUFFER, VBO_Floor);
     glBufferData(GL_ARRAY_BUFFER, sizeof(floorVertices), floorVertices, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    // Posição (layout 0)
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
+    // Normal (layout 1)
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
 
+    // 2. GRID (Não precisa de normais, desenhamos com cor fixa)
     std::vector<float> gridV;
     float step = 10.0f;
     for (float i = -size; i <= size; i += step) {
@@ -136,27 +153,74 @@ void CreateCommonGeometry() {
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
-    float pyramidVertices[] = { -0.5f, -0.5f, 0.0f, 0.5f, -0.5f, 0.0f, 0.0f, 0.5f, 0.0f, -0.5f, -0.5f, 0.0f, 0.5f, -0.5f, 0.0f, 0.0f, 0.0f, 1.0f, 0.5f, -0.5f, 0.0f, 0.0f, 0.5f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.5f, 0.0f, -0.5f, -0.5f, 0.0f, 0.0f, 0.0f, 1.0f };
+    // 3. PIRÂMIDE GENÉRICA (com normais)
+    // As normais são calculadas "para fora" da face
+    float pyramidVertices[] = {
+        // Posição            // Normal da Face
+        // Base (Normal 0,0,-1 - olhando para baixo no modelo local)
+        -0.5f, -0.5f, 0.0f,  0.0f, 0.0f, -1.0f,
+         0.5f, -0.5f, 0.0f,  0.0f, 0.0f, -1.0f,
+         0.0f,  0.5f, 0.0f,  0.0f, 0.0f, -1.0f, 
+        // Face 1 (Baixo)
+        -0.5f, -0.5f, 0.0f,  0.0f, -0.87f, 0.5f,
+         0.5f, -0.5f, 0.0f,  0.0f, -0.87f, 0.5f,
+         0.0f,  0.0f, 1.0f,  0.0f, -0.87f, 0.5f, 
+        // Face 2 (Direita)
+         0.5f, -0.5f, 0.0f,  0.87f, 0.0f, 0.5f,
+         0.0f,  0.5f, 0.0f,  0.87f, 0.0f, 0.5f,
+         0.0f,  0.0f, 1.0f,  0.87f, 0.0f, 0.5f, 
+        // Face 3 (Esquerda)
+         0.0f,  0.5f, 0.0f, -0.87f, 0.0f, 0.5f,
+        -0.5f, -0.5f, 0.0f, -0.87f, 0.0f, 0.5f,
+         0.0f,  0.0f, 1.0f, -0.87f, 0.0f, 0.5f  
+    };
     glGenVertexArrays(1, &VAO_Pyramid); glGenBuffers(1, &VBO_Pyramid);
     glBindVertexArray(VAO_Pyramid); glBindBuffer(GL_ARRAY_BUFFER, VBO_Pyramid);
     glBufferData(GL_ARRAY_BUFFER, sizeof(pyramidVertices), pyramidVertices, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    // Posição
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
+    // Normal
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
 
+    // 4. CONE (com normais)
     std::vector<float> coneV;
-    int segments = 32; float radius = 4.0f, height = TOWER_HEIGHT;
+    int segments = 32; 
+    float radius = 15.0f; // Raio largo
+    float height = TOWER_HEIGHT;
+    float slopeY = radius / height; // Componente Y da normal lateral
+    
     for(int i=0; i<segments; i++) {
-        float ang = (float)i/segments * 6.2831f; float nextAng = (float)(i+1)/segments * 6.2831f;
-        float x1 = cos(ang)*radius, z1 = sin(ang)*radius; float x2 = cos(nextAng)*radius, z2 = sin(nextAng)*radius;
-        coneV.insert(coneV.end(), {0, height, 0, x1, 0, z1, x2, 0, z2});
-        coneV.insert(coneV.end(), {0, 0, 0, x2, 0, z2, x1, 0, z1});
+        float ang = (float)i/segments * 6.2831f; 
+        float nextAng = (float)(i+1)/segments * 6.2831f;
+        float x1 = cos(ang)*radius, z1 = sin(ang)*radius;
+        float x2 = cos(nextAng)*radius, z2 = sin(nextAng)*radius;
+        
+        // Normais para o lado do cone
+        glm::vec3 n1 = glm::normalize(glm::vec3(x1, slopeY, z1));
+        glm::vec3 n2 = glm::normalize(glm::vec3(x2, slopeY, z2));
+        
+        // Lateral (Pico (normal p/ cima), Base 1, Base 2)
+        coneV.insert(coneV.end(), {0, height, 0, 0, 1, 0});
+        coneV.insert(coneV.end(), {x1, 0, z1, n1.x, n1.y, n1.z});
+        coneV.insert(coneV.end(), {x2, 0, z2, n2.x, n2.y, n2.z});
+        
+        // Base (Normal 0,-1,0 - para baixo)
+        coneV.insert(coneV.end(), {0, 0, 0, 0, -1, 0});
+        coneV.insert(coneV.end(), {x2, 0, z2, 0, -1, 0});
+        coneV.insert(coneV.end(), {x1, 0, z1, 0, -1, 0});
     }
-    coneVertexCount = coneV.size() / 3;
+    coneVertexCount = coneV.size() / 6; // 6 floats por vértice
     glGenVertexArrays(1, &VAO_Cone); glGenBuffers(1, &VBO_Cone);
     glBindVertexArray(VAO_Cone); glBindBuffer(GL_ARRAY_BUFFER, VBO_Cone);
     glBufferData(GL_ARRAY_BUFFER, coneV.size() * sizeof(float), coneV.data(), GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    // Posição
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
+    // Normal
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
 }
 
 // --- DESENHO ---
@@ -209,15 +273,14 @@ glm::vec3 SteerTowards(Boid& b, glm::vec3 target) {
 }
 
 void UpdateFlock(float dt) {
-    // --- FÍSICA DO LÍDER (CORRIGIDA) ---
+    // --- FÍSICA DO LÍDER ---
     if (glm::length(leaderInputDirection) > 0.0f) {
         leaderBoid.acceleration = glm::normalize(leaderInputDirection) * LEADER_THRUST;
     } else {
         leaderBoid.acceleration = glm::vec3(0.0f);
     }
     
-    // *** CORREÇÃO AQUI: Adicionado o multiplicador de agilidade * 5.0f ***
-    leaderBoid.velocity += leaderBoid.acceleration * dt * 5.0f; 
+    leaderBoid.velocity += leaderBoid.acceleration * dt * 5.0f; // Multiplicador de agilidade
     
     leaderBoid.velocity *= LEADER_DAMPING; 
     
@@ -320,7 +383,6 @@ void UpdateFlock(float dt) {
 // --- INPUT ---
 
 void ProcessInput(GLFWwindow *window) {
-    // Apenas armazena a direção do input para o UpdateFlock()
     leaderInputDirection = glm::vec3(0.0f);
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) leaderInputDirection.z -= 1.0f;
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) leaderInputDirection.z += 1.0f;
@@ -371,12 +433,15 @@ void GameWindow::Render() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
+    
+    // Ativa o shader e define as luzes
     s.use();
+    s.setVec3("lightColor", 1.0f, 1.0f, 1.0f); // Luz branca
+    s.setVec3("lightPos", 0.0f, 150.0f, 100.0f); // Posição do "sol" (alto, um pouco à frente)
 
     glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 500.0f);
     s.setMat4("projection", projection);
     
-    // Lógica de Câmera (Focada no BANDO)
     glm::mat4 view;
     glm::vec3 center = flockCenter; 
     glm::vec3 up(0.0f, 1.0f, 0.0f); 
@@ -417,16 +482,25 @@ void GameWindow::Render() {
     }
     s.setMat4("view", view);
 
-    // Desenha o mundo
+    // --- Desenha o mundo ---
     s.setMat4("model", glm::mat4(1.0f));
     s.setVec3("objectColor", 0.2f, 0.4f, 0.2f); 
     glBindVertexArray(VAO_Floor); glDrawArrays(GL_TRIANGLES, 0, 6);
-    s.setVec3("objectColor", 0.0f, 0.0f, 0.0f); 
+    
+    // O Grid não tem normais, então damos uma cor pura (sem luz)
+    // Para fazer isso, vamos "desligar" a luz para ele, enviando uma cor de luz preta
+    s.setVec3("lightColor", 0.0f, 0.0f, 0.0f); // Luz apagada
+    s.setVec3("objectColor", 0.0f, 0.0f, 0.0f); // Linhas Pretas
     glBindVertexArray(VAO_Grid); glDrawArrays(GL_LINES, 0, gridVertexCount);
+    
+    // "Acende" a luz novamente para o resto da cena
+    s.setVec3("lightColor", 1.0f, 1.0f, 1.0f); 
+
+    // Torre (agora reage à luz)
     s.setVec3("objectColor", 0.6f, 0.6f, 0.7f); 
     glBindVertexArray(VAO_Cone); glDrawArrays(GL_TRIANGLES, 0, coneVertexCount);
 
-    // Desenha os Atores
+    // --- Desenha os Atores ---
     glm::mat4 leaderM = calculateOrientation(leaderBoid.position, leaderBoid.forwardDirection);
     DrawBoidParts(leaderBoid, leaderM, true);
 
@@ -466,7 +540,7 @@ void GameWindow::LoadContent() {
     IMGUI_CHECKVERSION(); ImGui::CreateContext(); ImGui_ImplGlfw_InitForOpenGL(windowHandle, true); ImGui_ImplOpenGL3_Init("#version 330");
     
     s = Shader::LoadShader("resources/shaders/testing.vs", "resources/shaders/testing.fs");
-    CreateCommonGeometry();
+    CreateCommonGeometry(); // Chama a função que usa TOWER_HEIGHT para construir a torre
     glEnable(GL_DEPTH_TEST);
     
     leaderBoid.position = glm::vec3(0, 15, 0);
