@@ -3,7 +3,8 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
-#include <cstdlib> 
+#include <cstdlib>
+#include <string>
 
 // GLM
 #include <glm/glm.hpp>
@@ -11,6 +12,37 @@
 #include <glm/gtc/type_ptr.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/vector_angle.hpp>
+
+// Auxiliar simples para compilar shader usado para o quad do céu 
+static unsigned int CompileShaderFromSource(unsigned int type, const char* src) {
+    unsigned int id = glCreateShader(type);
+    glShaderSource(id, 1, &src, nullptr);
+    glCompileShader(id);
+    int success;
+    glGetShaderiv(id, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        char info[1024]; glGetShaderInfoLog(id, 1024, NULL, info);
+        std::cout << "Shader compile error: " << info << std::endl;
+    }
+    return id;
+}
+static unsigned int CreateProgramFromSrc(const char* vsSrc, const char* fsSrc) {
+    unsigned int vs = CompileShaderFromSource(GL_VERTEX_SHADER, vsSrc);
+    unsigned int fs = CompileShaderFromSource(GL_FRAGMENT_SHADER, fsSrc);
+    unsigned int prog = glCreateProgram();
+    glAttachShader(prog, vs);
+    glAttachShader(prog, fs);
+    glLinkProgram(prog);
+    int success;
+    glGetProgramiv(prog, GL_LINK_STATUS, &success);
+    if (!success) {
+        char info[1024]; glGetProgramInfoLog(prog, 1024, NULL, info);
+        std::cout << "Program link error: " << info << std::endl;
+    }
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    return prog;
+}
 
 // --- TUNING: BOIDS ÁGEIS ---
 const float PERCEPTION_RADIUS = 12.0f; 
@@ -21,26 +53,25 @@ const float MAX_FORCE = 3.0f;
 
 // PESOS
 const float WEIGHT_SEPARATION = 5.0f;   
-const float WEIGHT_ALIGNMENT  = 1.5f;   
+const float WEIGHT_ALIGNMENT  = 1.5f;
 const float WEIGHT_COHESION   = 1.5f;   
-const float WEIGHT_GOAL       = 5.0f;   
-const float WEIGHT_AVOID_FLOOR= 10.0f; 
+const float WEIGHT_GOAL       = 5.0f;
+const float WEIGHT_AVOID_FLOOR= 10.0f;
 
 // --- Parâmetros do líder ---
-const float LEADER_THRUST = 80.0f;    
-const float LEADER_MAX_SPEED = 9.0f; 
-const float LEADER_DAMPING = 0.96f;   
+const float LEADER_THRUST = 80.0f;
+const float LEADER_MAX_SPEED = 10.0f; 
+const float LEADER_DAMPING = 0.96f;
 
 // --- Câmera ---
-const float CAMERA_SMOOTH_SPEED = 2.0f; 
+const float CAMERA_SMOOTH_SPEED = 2.0f;
 
-// --- Estrutura do boid ---
 struct Boid {
     glm::vec3 position;
     glm::vec3 velocity;
     glm::vec3 acceleration;
-    glm::vec3 forwardDirection; 
-    float wingAngle;            
+    glm::vec3 forwardDirection;
+    float wingAngle;
     float wingSpeed;
 
     Boid(glm::vec3 startPos) {
@@ -48,7 +79,7 @@ struct Boid {
         velocity = glm::vec3((float)(rand()%10-5), 0.0f, (float)(rand()%10-5));
         if(glm::length(velocity) < 0.1f) velocity = glm::vec3(0,0,1);
         velocity = glm::normalize(velocity) * MIN_SPEED;
-        
+
         forwardDirection = glm::normalize(velocity);
         wingAngle = (float)(rand() % 100);
         wingSpeed = 15.0f + (float)(rand() % 10);
@@ -56,10 +87,10 @@ struct Boid {
     }
 };
 
-// --- Estado global ---
+// --- GLOBAIS ---
 Shader s;
-Boid leaderBoid(glm::vec3(0.0f, 15.0f, 0.0f)); 
-std::vector<Boid> flock; 
+Boid leaderBoid(glm::vec3(0.0f, 15.0f, 0.0f));
+std::vector<Boid> flock;
 
 // Geometria
 unsigned int VAO_Floor, VBO_Floor, VAO_Cone, VBO_Cone, VAO_Pyramid, VBO_Pyramid, VAO_Grid, VBO_Grid;
@@ -74,29 +105,33 @@ const int SCR_WIDTH = 800;
 const int SCR_HEIGHT = 600;
 
 // Câmera
-int activeCameraMode = 0; 
-const float TOWER_HEIGHT = 80.0f;
+int activeCameraMode = 0;
+const float TOWER_HEIGHT = 60.0f;
 
-// Alvos da câmera (real vs suave)
-glm::vec3 flockCenter(0.0f); 
-glm::vec3 flockAverageVelocity(0.0f, 0.0f, 1.0f); 
-glm::vec3 smoothFlockCenter(0.0f, 15.0f, 0.0f); 
-glm::vec3 smoothFlockVelocity(0.0f, 0.0f, 1.0f); 
+// Alvos da Câmera (Real vs Suave)
+glm::vec3 flockCenter(0.0f);
+glm::vec3 flockAverageVelocity(0.0f, 0.0f, 1.0f);
+glm::vec3 smoothFlockCenter(0.0f, 15.0f, 0.0f);
+glm::vec3 smoothFlockVelocity(0.0f, 0.0f, 1.0f);
 
-glm::vec3 leaderInputDirection(0.0f); 
+glm::vec3 leaderInputDirection(0.0f);
 
-// viewport callback
+// Fullscreen quad (sky) runtime objects
+unsigned int skyQuadVAO = 0;
+unsigned int skyQuadVBO = 0;
+unsigned int skyProgram = 0;
+
 void FramebufferSizeCallback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
 }
 
-// --- Calcula orientação do modelo a partir da direção ---
+// --- MATEMÁTICA ---
 glm::mat4 calculateOrientation(glm::vec3 position, glm::vec3 forwardVector) {
     glm::mat4 model = glm::mat4(1.0f);
     model = glm::translate(model, position);
 
     if (glm::length(forwardVector) < 0.01f || std::isnan(forwardVector.x)) {
-        forwardVector = glm::vec3(0.0f, 0.0f, 1.0f); 
+        forwardVector = glm::vec3(0.0f, 0.0f, 1.0f);
     }
 
     glm::vec3 forward = glm::normalize(forwardVector);
@@ -110,15 +145,15 @@ glm::mat4 calculateOrientation(glm::vec3 position, glm::vec3 forwardVector) {
     glm::mat4 rotation(1.0f);
     rotation[0] = glm::vec4(right, 0.0f);
     rotation[1] = glm::vec4(realUp, 0.0f);
-    rotation[2] = glm::vec4(forward, 0.0f); 
+    rotation[2] = glm::vec4(forward, 0.0f);
     rotation[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
 
     return model * rotation;
 }
 
-// --- Cria geometrias utilizadas ---
+// --- GEOMETRIA (COM NORMAIS) ---
 void CreateCommonGeometry() {
-    // chão (com normais)
+    // 1. CHÃO (com normais)
     float size = 200.0f;
     float floorVertices[] = {
          size, 0.0f,  size,  0.0f, 1.0f, 0.0f, -size, 0.0f,  size,  0.0f, 1.0f, 0.0f, -size, 0.0f, -size,  0.0f, 1.0f, 0.0f,
@@ -132,7 +167,7 @@ void CreateCommonGeometry() {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
 
-    // grid de referência
+    // 2. GRID
     std::vector<float> gridV;
     float step = 10.0f;
     for (float i = -size; i <= size; i += step) {
@@ -148,12 +183,12 @@ void CreateCommonGeometry() {
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
-    // pirâmide (modelo base do boid, com normais)
+    // 3. PIRÂMIDE GENÉRICA (com normais)
     float pyramidVertices[] = {
-        -0.5f, -0.5f, 0.0f,  0.0f, 0.0f, -1.0f,  0.5f, -0.5f, 0.0f,  0.0f, 0.0f, -1.0f,  0.0f,  0.5f, 0.0f,  0.0f, 0.0f, -1.0f, 
-        -0.5f, -0.5f, 0.0f,  0.0f, -0.87f, 0.5f, 0.5f, -0.5f, 0.0f,  0.0f, -0.87f, 0.5f, 0.0f,  0.0f, 1.0f,  0.0f, -0.87f, 0.5f, 
-         0.5f, -0.5f, 0.0f,  0.87f, 0.0f, 0.5f,  0.0f,  0.5f, 0.0f,  0.87f, 0.0f, 0.5f,  0.0f,  0.0f, 1.0f,  0.87f, 0.0f, 0.5f, 
-         0.0f,  0.5f, 0.0f, -0.87f, 0.0f, 0.5f, -0.5f, -0.5f, 0.0f, -0.87f, 0.0f, 0.5f, 0.0f,  0.0f, 1.0f, -0.87f, 0.0f, 0.5f  
+        -0.5f, -0.5f, 0.0f,  0.0f, 0.0f, -1.0f,  0.5f, -0.5f, 0.0f,  0.0f, 0.0f, -1.0f,  0.0f,  0.5f, 0.0f,  0.0f, 0.0f, -1.0f,
+        -0.5f, -0.5f, 0.0f,  0.0f, -0.87f, 0.5f, 0.5f, -0.5f, 0.0f,  0.0f, -0.87f, 0.5f, 0.0f,  0.0f, 1.0f,  0.0f, -0.87f, 0.5f,
+         0.5f, -0.5f, 0.0f,  0.87f, 0.0f, 0.5f,  0.0f,  0.5f, 0.0f,  0.87f, 0.0f, 0.5f,  0.0f,  0.0f, 1.0f,  0.87f, 0.0f, 0.5f,
+         0.0f,  0.5f, 0.0f, -0.87f, 0.0f, 0.5f, -0.5f, -0.5f, 0.0f, -0.87f, 0.0f, 0.5f, 0.0f,  0.0f, 1.0f, -0.87f, 0.0f, 0.5f
     };
     glGenVertexArrays(1, &VAO_Pyramid); glGenBuffers(1, &VBO_Pyramid);
     glBindVertexArray(VAO_Pyramid); glBindBuffer(GL_ARRAY_BUFFER, VBO_Pyramid);
@@ -163,14 +198,14 @@ void CreateCommonGeometry() {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
 
-    // cone (torre), com normais
+    // 4. CONE (com normais)
     std::vector<float> coneV;
-    int segments = 32; 
-    float radius = 15.0f; // raio
+    int segments = 32;
+    float radius = 10.0f; // Raio largo
     float height = TOWER_HEIGHT;
-    float slopeY = radius / height; 
+    float slopeY = radius / height;
     for(int i=0; i<segments; i++) {
-        float ang = (float)i/segments * 6.2831f; 
+        float ang = (float)i/segments * 6.2831f;
         float nextAng = (float)(i+1)/segments * 6.2831f;
         float x1 = cos(ang)*radius, z1 = sin(ang)*radius;
         float x2 = cos(nextAng)*radius, z2 = sin(nextAng)*radius;
@@ -193,23 +228,23 @@ void CreateCommonGeometry() {
     glEnableVertexAttribArray(1);
 }
 
-// --- Desenha o boid (corpo + nariz + asas) ---
+// --- DESENHO (COM SOMBRA) ---
 void DrawBoidParts(const Boid& boid, glm::mat4 baseMatrix, bool isLeader, bool useLighting) {
     glBindVertexArray(VAO_Pyramid);
     glm::mat4 model;
-    
+
     if (useLighting) {
         glm::vec3 bodyColor = isLeader ? glm::vec3(1.0f, 0.2f, 0.2f) : glm::vec3(1.0f, 1.0f, 0.0f);
         s.setVec3("objectColor", bodyColor);
     }
-    model = glm::scale(baseMatrix, glm::vec3(0.5f, 0.5f, 1.5f)); 
+    model = glm::scale(baseMatrix, glm::vec3(0.5f, 0.5f, 1.5f));
     s.setMat4("model", model);
     glDrawArrays(GL_TRIANGLES, 0, 12);
 
     if (useLighting) {
-        s.setVec3("objectColor", 1.0f, 0.0f, 0.0f); 
+        s.setVec3("objectColor", 1.0f, 0.0f, 0.0f);
     }
-    model = glm::translate(baseMatrix, glm::vec3(0.0f, 0.0f, 0.8f)); 
+    model = glm::translate(baseMatrix, glm::vec3(0.0f, 0.0f, 0.8f));
     model = glm::scale(model, glm::vec3(0.3f, 0.3f, 0.5f));
     s.setMat4("model", model);
     glDrawArrays(GL_TRIANGLES, 0, 12);
@@ -221,68 +256,70 @@ void DrawBoidParts(const Boid& boid, glm::mat4 baseMatrix, bool isLeader, bool u
     float wingRot = sin(boid.wingAngle) * 30.0f;
 
     model = glm::translate(baseMatrix, glm::vec3(-0.2f, 0.0f, 0.2f));
-    model = glm::rotate(model, glm::radians(wingRot), glm::vec3(0, 0, 1)); 
+    model = glm::rotate(model, glm::radians(wingRot), glm::vec3(0, 0, 1));
     model = glm::scale(model, glm::vec3(1.2f, 0.1f, 0.8f));
-    model = glm::rotate(model, glm::radians(90.0f), glm::vec3(0,0,1)); 
+    model = glm::rotate(model, glm::radians(90.0f), glm::vec3(0,0,1));
     s.setMat4("model", model);
     glDrawArrays(GL_TRIANGLES, 0, 12);
 
     model = glm::translate(baseMatrix, glm::vec3(0.2f, 0.0f, 0.2f));
-    model = glm::rotate(model, glm::radians(-wingRot), glm::vec3(0, 0, 1)); 
+    model = glm::rotate(model, glm::radians(-wingRot), glm::vec3(0, 0, 1));
     model = glm::scale(model, glm::vec3(1.2f, 0.1f, 0.8f));
     model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(0,0,1));
     s.setMat4("model", model);
     glDrawArrays(GL_TRIANGLES, 0, 12);
 }
 
-// --- Utilitários ---
+// --- LÓGICA DE FLOCKING ---
 glm::vec3 limitVector(glm::vec3 v, float maxVal) {
     if (glm::length(v) > maxVal) return glm::normalize(v) * maxVal;
     return v;
 }
 
 glm::vec3 SteerTowards(Boid& b, glm::vec3 target) {
-    glm::vec3 desired = target - b.position; 
+    glm::vec3 desired = target - b.position;
     float dist = glm::length(desired);
     if (dist == 0) return glm::vec3(0.0f);
 
     desired = glm::normalize(desired) * MAX_SPEED;
 
-    glm::vec3 steer = desired - b.velocity; 
+    glm::vec3 steer = desired - b.velocity;
     if (glm::length(steer) > MAX_FORCE) {
         steer = glm::normalize(steer) * MAX_FORCE;
     }
     return steer;
 }
 
-// --- Atualiza líder, seguidores e câmera ---
 void UpdateFlock(float dt) {
-    // líder controlado por input
+    // --- FÍSICA DO LÍDER (MOVIMENTO SUAVE E RÁPIDO) ---
     if (glm::length(leaderInputDirection) > 0.0f) {
         leaderBoid.acceleration = glm::normalize(leaderInputDirection) * LEADER_THRUST;
     } else {
         leaderBoid.acceleration = glm::vec3(0.0f);
     }
-    
-    leaderBoid.velocity += leaderBoid.acceleration * dt * 5.0f; // agilidade
-    leaderBoid.velocity *= LEADER_DAMPING; 
-    
+
+    leaderBoid.velocity += leaderBoid.acceleration * dt * 5.0f; // Multiplicador de agilidade
+
+    leaderBoid.velocity *= LEADER_DAMPING;
+
     if (glm::length(leaderBoid.velocity) > LEADER_MAX_SPEED) {
         leaderBoid.velocity = glm::normalize(leaderBoid.velocity) * LEADER_MAX_SPEED;
     }
 
     leaderBoid.position += leaderBoid.velocity * dt;
-    if (glm::length(leaderBoid.velocity) > 0.1f) 
+    if (glm::length(leaderBoid.velocity) > 0.1f)
         leaderBoid.forwardDirection = glm::normalize(leaderBoid.velocity);
     leaderBoid.wingAngle += leaderBoid.wingSpeed * dt;
+    // --- FIM DA FÍSICA DO LÍDER ---
 
-    // seguidores
+
+    // --- FÍSICA DO BANDO ---
     glm::vec3 centerSum(0.0f);
     glm::vec3 velocitySum(0.0f);
 
     for (auto& b : flock) {
         b.acceleration = glm::vec3(0.0f);
-        
+
         glm::vec3 separation(0.0f), alignment(0.0f), cohesion(0.0f);
         int neighbors = 0;
         for (const auto& other : flock) {
@@ -329,21 +366,21 @@ void UpdateFlock(float dt) {
         b.acceleration += steerFloor * WEIGHT_AVOID_FLOOR;
 
         b.acceleration = limitVector(b.acceleration, MAX_FORCE);
-        b.velocity += b.acceleration * dt * 5.0f; 
+        b.velocity += b.acceleration * dt * 5.0f;
         b.velocity = limitVector(b.velocity, MAX_SPEED);
-        
-        if (glm::length(b.velocity) < MIN_SPEED) 
+
+        if (glm::length(b.velocity) < MIN_SPEED)
              b.velocity = glm::normalize(b.velocity) * MIN_SPEED;
 
         b.position += b.velocity * dt;
         b.wingAngle += b.wingSpeed * dt;
         b.forwardDirection = glm::normalize(b.velocity);
-        
+
         centerSum += b.position;
         velocitySum += b.velocity;
     }
 
-    // média do bando
+    // --- Cálculo Final da Média do Bando (Alvo da Câmera) ---
     if (!flock.empty()) {
         flockCenter = centerSum / (float)flock.size();
         flockAverageVelocity = velocitySum / (float)flock.size();
@@ -352,16 +389,18 @@ void UpdateFlock(float dt) {
         flockAverageVelocity = leaderBoid.velocity;
     }
 
-    // suavização da câmera
+    // --- Lógica de Câmera Suave ---
     float smoothFactor = 1.0f - exp(-dt * CAMERA_SMOOTH_SPEED);
     smoothFlockCenter = glm::mix(smoothFlockCenter, flockCenter, smoothFactor);
-    
+
     if (glm::length(flockAverageVelocity) > 0.1f) {
         smoothFlockVelocity = glm::mix(smoothFlockVelocity, glm::normalize(flockAverageVelocity), smoothFactor);
     }
+    // ------------------------------------
 }
 
-// --- Entrada do usuário ---
+
+// --- INPUT ---
 void ProcessInput(GLFWwindow *window) {
     leaderInputDirection = glm::vec3(0.0f);
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) leaderInputDirection.z -= 1.0f;
@@ -370,14 +409,15 @@ void ProcessInput(GLFWwindow *window) {
     if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) leaderInputDirection.x += 1.0f;
     if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) leaderInputDirection.y += 1.0f;
     if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) leaderInputDirection.y -= 1.0f;
-    
-    // troca de câmera
+
+    // --- Input da Câmera ---
     if (glfwGetKey(window, GLFW_KEY_0) == GLFW_PRESS) activeCameraMode = 0;
     if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) activeCameraMode = 1;
     if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) activeCameraMode = 2;
     if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS) activeCameraMode = 3;
+    // --------------------------------
 
-    // adicionar boid
+    // Adicionar/Remover Boids
     static bool btnPlus = false;
     if (glfwGetKey(window, GLFW_KEY_EQUAL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_KP_ADD) == GLFW_PRESS) {
         if (!btnPlus) {
@@ -386,7 +426,6 @@ void ProcessInput(GLFWwindow *window) {
         }
     } else btnPlus = false;
 
-    // remover boid
     static bool btnMinus = false;
     if (glfwGetKey(window, GLFW_KEY_MINUS) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS) {
         if (!btnMinus) {
@@ -396,7 +435,8 @@ void ProcessInput(GLFWwindow *window) {
     } else btnMinus = false;
 }
 
-// --- Update principal ---
+// --- UPDATE & RENDER ---
+
 void GameWindow::Update() {
     float currentFrame = (float)glfwGetTime();
     deltaTime = currentFrame - lastFrame;
@@ -408,97 +448,129 @@ void GameWindow::Update() {
     s.ReloadFromFile();
 }
 
-// --- Render principal ---
 void GameWindow::Render() {
-    glClearColor(0.6f, 0.85f, 0.95f, 1.0f);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
+
+    if (skyProgram != 0) {
+
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+
+        glUseProgram(skyProgram);
+
+        int u_mode = glGetUniformLocation(skyProgram, "u_mode");
+        if (u_mode != -1) glUniform1i(u_mode, 0); 
+
+        glBindVertexArray(skyQuadVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 3); 
+        glBindVertexArray(0);
+
+        glDepthMask(GL_TRUE);
+        glEnable(GL_DEPTH_TEST);
+    }
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
     s.use();
-
     s.setVec3("lightColor", 1.0f, 1.0f, 1.0f);
-    s.setVec3("lightPos", 0.0f, 150.0f, 100.0f); 
+    s.setVec3("lightPos", 0.0f, 150.0f, 100.0f);
 
-    glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 500.0f);
+    glm::mat4 projection =
+        glm::perspective(glm::radians(45.0f),
+                         (float)SCR_WIDTH / (float)SCR_HEIGHT,
+                         0.1f, 500.0f);
     s.setMat4("projection", projection);
-    
-    // câmera baseada no centro suavizado do bando
-    glm::mat4 view;
-    glm::vec3 center = smoothFlockCenter; 
-    glm::vec3 up(0.0f, 1.0f, 0.0f); 
 
-    glm::vec3 avgFlockDir = smoothFlockVelocity; 
-    if (glm::length(avgFlockDir) < 0.1f) 
-        avgFlockDir = glm::vec3(0, 0, 1); 
+    // --- câmera ---
+    glm::mat4 view;
+    glm::vec3 center = smoothFlockCenter;
+    glm::vec3 up(0.0f, 1.0f, 0.0f);
+    glm::vec3 avgFlockDir = smoothFlockVelocity;
+
+    if (glm::length(avgFlockDir) < 0.1f)
+        avgFlockDir = glm::vec3(0, 0, 1);
     else
         avgFlockDir = glm::normalize(avgFlockDir);
 
     switch(activeCameraMode) {
-        case 1: { 
-            glm::vec3 eye = glm::vec3(0.0f, TOWER_HEIGHT + 2.0f, 0.1f); 
+        case 1: {
+            glm::vec3 eye = glm::vec3(0.0f, TOWER_HEIGHT + 2.0f, 0.1f);
             view = glm::lookAt(eye, center, up);
             break;
         }
-        case 2: { 
+        case 2: {
             float distance = 30.0f;
-            float height = 10.0f;   
+            float height = 10.0f;
             glm::vec3 eye = center - (avgFlockDir * distance) + glm::vec3(0.0f, height, 0.0f);
             view = glm::lookAt(eye, center, up);
             break;
         }
-        case 3: { 
+        case 3: {
             float distance = 30.0f;
-            float height = 5.0f;    
-            glm::vec3 rightDir = glm::normalize(glm::cross(avgFlockDir, up)); 
+            float height = 5.0f;
+            glm::vec3 rightDir = glm::normalize(glm::cross(avgFlockDir, up));
             glm::vec3 eye = center + (rightDir * distance) + glm::vec3(0.0f, height, 0.0f);
             view = glm::lookAt(eye, center, up);
             break;
         }
-        default: 
-        case 0: { 
-            glm::vec3 offset = glm::vec3(0, 40, 80); 
+        default:
+        case 0: {
+            glm::vec3 offset = glm::vec3(0, 30, 60);
             glm::vec3 eye = center + offset;
             view = glm::lookAt(eye, center, up);
             break;
         }
     }
     s.setMat4("view", view);
+    // --- fim da câmera ---
 
-    // desenha mundo
-    s.setBool("useLighting", true); 
-    
+    // --- chão ---
+    s.setBool("useLighting", true);
     s.setMat4("model", glm::mat4(1.0f));
-    s.setVec3("objectColor", 0.2f, 0.4f, 0.2f); 
-    glBindVertexArray(VAO_Floor); glDrawArrays(GL_TRIANGLES, 0, 6);
-    
-    s.setVec3("objectColor", 0.6f, 0.6f, 0.7f); 
-    glBindVertexArray(VAO_Cone); glDrawArrays(GL_TRIANGLES, 0, coneVertexCount);
+    s.setVec3("objectColor", 0.2f, 0.4f, 0.2f);
+    glBindVertexArray(VAO_Floor);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
 
-    s.setBool("useLighting", false); 
-    s.setVec3("objectColor", 0.0f, 0.0f, 0.0f); 
-    glBindVertexArray(VAO_Grid); glDrawArrays(GL_LINES, 0, gridVertexCount);
 
-    // desenha atores (com sombra simples)
-    s.setBool("useLighting", true); 
+    s.setBool("useGroundGradient", false);
+
+    // --- torre ---
+    s.setVec3("objectColor", 0.0f, 0.05f, 0.2f);
+    glBindVertexArray(VAO_Cone);
+    glDrawArrays(GL_TRIANGLES, 0, coneVertexCount);
+
+    // // --- grid suave ---
+    // s.setBool("useLighting", false);
+    // s.setVec3("objectColor", 0.1f, 0.15f, 0.1f); // bem discreto
+    // glBindVertexArray(VAO_Grid);
+    // glDrawArrays(GL_LINES, 0, gridVertexCount);
+
+    // --- boid líder ---
+    s.setBool("useLighting", true);
     glm::mat4 leaderM = calculateOrientation(leaderBoid.position, leaderBoid.forwardDirection);
-    DrawBoidParts(leaderBoid, leaderM, true, true); 
+    DrawBoidParts(leaderBoid, leaderM, true, true);
 
+    // --- boids ---
     for (const auto& b : flock) {
         glm::vec3 shadowPos = b.position;
-        shadowPos.y = 0.05f; 
+        shadowPos.y = 0.05f;
         glm::mat4 shadowMatrix = calculateOrientation(shadowPos, b.forwardDirection);
         shadowMatrix = glm::scale(shadowMatrix, glm::vec3(1.0f, 0.05f, 1.0f));
-        
+
         s.setBool("useLighting", false);
         s.setVec3("objectColor", 0.0f, 0.0f, 0.0f);
-        DrawBoidParts(b, shadowMatrix, false, false); 
+        DrawBoidParts(b, shadowMatrix, false, false);
 
         s.setBool("useLighting", true);
         glm::mat4 boidM = calculateOrientation(b.position, b.forwardDirection);
-        DrawBoidParts(b, boidM, false, true); 
+        DrawBoidParts(b, boidM, false, true);
     }
 
-    // HUD mínimo
+    // HUD
     ImGui::Begin("Debug");
     std::string camMode;
     switch(activeCameraMode) {
@@ -509,48 +581,108 @@ void GameWindow::Render() {
     }
     ImGui::Text("Camera: %s", camMode.c_str());
     ImGui::Text("Boids: %d", (int)flock.size());
-    ImGui::Text("Lider Pos: %.1f %.1f %.1f", leaderBoid.position.x, leaderBoid.position.y, leaderBoid.position.z);
-    ImGui::Text("Bando (Alvo): %.1f %.1f %.1f", smoothFlockCenter.x, smoothFlockCenter.y, smoothFlockCenter.z);
+    ImGui::Text("Lider Pos: %.1f %.1f %.1f",
+        leaderBoid.position.x,
+        leaderBoid.position.y,
+        leaderBoid.position.z);
+    ImGui::Text("Bando (Alvo): %.1f %.1f %.1f",
+        smoothFlockCenter.x,
+        smoothFlockCenter.y,
+        smoothFlockCenter.z);
     ImGui::End();
 
-    ImGui::Render(); ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-    glfwSwapBuffers(windowHandle); glfwPollEvents();
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    glfwSwapBuffers(windowHandle);
+    glfwPollEvents();
 }
 
-// --- Inicialização da janela ---
+// --- BOILERPLATE ---
+
+
+
 void GameWindow::Initialize() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 }
 
-// --- Carrega conteúdo e estado inicial ---
+// --- LOAD CONTENT ---
 void GameWindow::LoadContent() {
     glfwSetFramebufferSizeCallback(windowHandle, FramebufferSizeCallback);
     IMGUI_CHECKVERSION(); ImGui::CreateContext(); ImGui_ImplGlfw_InitForOpenGL(windowHandle, true); ImGui_ImplOpenGL3_Init("#version 330");
-    
+
     s = Shader::LoadShader("resources/shaders/testing.vs", "resources/shaders/testing.fs");
     CreateCommonGeometry();
     glEnable(GL_DEPTH_TEST);
-    
+
     leaderBoid.position = glm::vec3(0, 15, 30.0f);
-    
-    // inicializa câmera suave
-    smoothFlockCenter = leaderBoid.position; 
+
+    // --- NOVO: Inicializa a câmera suave ---
+    smoothFlockCenter = leaderBoid.position;
 
     flock.clear();
     for(int i = 0; i < 10; i++) {
-        float angle = (float)i / 10.0f * 6.28f; 
+        float angle = (float)i / 10.0f * 6.28f;
         glm::vec3 offset(cos(angle)*2.0f, 0.0f, sin(angle)*2.0f);
         flock.push_back(Boid(leaderBoid.position + offset));
     }
+
+    // --- Cria fullscreen triangle (sky) e programa simples para gradiente azul ---
+    const char* skyVS = R"(
+        #version 330 core
+        layout(location = 0) in vec2 aPos;
+        out vec2 vUV;
+        void main() {
+            vUV = aPos * 0.5 + 0.5;
+            gl_Position = vec4(aPos, 0.0, 1.0);
+        }
+    )";
+
+    // Fragment shader: simple vertical blue gradient (A - natural blue)
+    const char* skyFS = R"(
+        #version 330 core
+        out vec4 FragColor;
+        in vec2 vUV;
+        uniform int u_mode; // reserved for future variants
+        const vec3 topColor = vec3(0.10, 0.20, 0.45);
+        const vec3 bottomColor = vec3(0.55, 0.75, 0.95);
+        void main() {
+            // ease the interpolation a bit for nicer curve
+            float t = smoothstep(0.0, 1.0, vUV.y);
+            vec3 col = mix(bottomColor, topColor, t);
+            FragColor = vec4(col, 1.0);
+        }
+    )";
+
+    skyProgram = CreateProgramFromSrc(skyVS, skyFS);
+
+    // Fullscreen single triangle (covers whole screen)
+    float quadVerts[] = {
+        -1.0f, -1.0f,
+         3.0f, -1.0f,
+        -1.0f,  3.0f
+    };
+    glGenVertexArrays(1, &skyQuadVAO);
+    glGenBuffers(1, &skyQuadVBO);
+    glBindVertexArray(skyQuadVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, skyQuadVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVerts), quadVerts, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    glBindVertexArray(0);
 }
 
-// --- Limpeza de recursos ---
 void GameWindow::Unload() {
     glDeleteVertexArrays(1, &VAO_Floor); glDeleteBuffers(1, &VBO_Floor);
     glDeleteVertexArrays(1, &VAO_Grid);  glDeleteBuffers(1, &VBO_Grid);
     glDeleteVertexArrays(1, &VAO_Cone);  glDeleteBuffers(1, &VBO_Cone);
     glDeleteVertexArrays(1, &VAO_Pyramid); glDeleteBuffers(1, &VBO_Pyramid);
+
+    // cleanup sky resources
+    if (skyQuadVAO) glDeleteVertexArrays(1, &skyQuadVAO);
+    if (skyQuadVBO) glDeleteBuffers(1, &skyQuadVBO);
+    if (skyProgram) glDeleteProgram(skyProgram);
+
     ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown(); ImGui::DestroyContext();
 }
