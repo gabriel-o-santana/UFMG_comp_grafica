@@ -14,8 +14,21 @@ include_directories(libs)
 include_directories(libs/glfw/include)
 include_directories(include)
 
-file(GLOB_RECURSE SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
-
+set(SOURCES
+    src/main.cpp
+    src/glad.cpp
+    src/utils/utility.cpp
+    src/shaders/shader.cpp
+    src/display/base_window.cpp
+    src/display/game_window.cpp
+    src/imgui/imgui.cpp
+    src/imgui/imgui_demo.cpp
+    src/imgui/imgui_draw.cpp
+    src/imgui/imgui_impl_glfw.cpp
+    src/imgui/imgui_impl_opengl3.cpp
+    src/imgui/imgui_tables.cpp
+    src/imgui/imgui_widgets.cpp
+)
 add_executable(opengl-imgui-cmake-template ${SOURCES})
 
 find_package(OpenGL REQUIRED)

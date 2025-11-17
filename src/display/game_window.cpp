@@ -45,32 +45,32 @@ static unsigned int CreateProgramFromSrc(const char* vsSrc, const char* fsSrc) {
 }
 
 // ---  OBSTÁCULO
-const float TOWER_RADIUS = 15.0f; 
+const float TOWER_RADIUS = 15.0f;
 const float TOWER_HEIGHT = 80.0f;
 const float GROUND_AVOID_HEIGHT = 5.0f;
-const float OBSTACLE_AVOID_RADIUS = TOWER_RADIUS + 2.0f; 
+const float OBSTACLE_AVOID_RADIUS = TOWER_RADIUS + 2.0f;
 // ------------------------------------------
 
 // --- TUNING: BOIDS ÁGEIS ---
-const float PERCEPTION_RADIUS = 12.0f; 
-const float SEPARATION_RADIUS = 4.0f;   
-const float MAX_SPEED = 10.0f;          
+const float PERCEPTION_RADIUS = 12.0f;
+const float SEPARATION_RADIUS = 4.0f;
+const float MAX_SPEED = 10.0f;
 const float MIN_SPEED = 4.0f;
-const float MAX_FORCE = 2.5f;           
+const float MAX_FORCE = 2.5f;
 
 // PESOS
-const float WEIGHT_SEPARATION = 5.0f;   
-const float WEIGHT_ALIGNMENT  = 1.5f;   
-const float WEIGHT_COHESION   = 1.5f;   
-const float WEIGHT_GOAL       = 5.0f;   
-const float WEIGHT_AVOID_FLOOR= 10.0f; 
+const float WEIGHT_SEPARATION = 5.0f;
+const float WEIGHT_ALIGNMENT  = 1.5f;
+const float WEIGHT_COHESION   = 1.5f;
+const float WEIGHT_GOAL       = 5.0f;
+const float WEIGHT_AVOID_FLOOR= 10.0f;
 // NOVO: Peso da força de desvio (alta prioridade)
-const float WEIGHT_AVOID_OBSTACLE = 15.0f; 
+const float WEIGHT_AVOID_OBSTACLE = 15.0f;
 
 // --- Parâmetros do líder ---
-const float LEADER_THRUST = 80.0f;    
-const float LEADER_MAX_SPEED = 9.0f; 
-const float LEADER_DAMPING = 0.96f;   
+const float LEADER_THRUST = 80.0f;
+const float LEADER_MAX_SPEED = 9.0f;
+const float LEADER_DAMPING = 0.96f;
 
 // --- Câmera ---
 const float CAMERA_SMOOTH_SPEED = 2.0f;
@@ -79,8 +79,8 @@ struct Boid {
     glm::vec3 position;
     glm::vec3 velocity;
     glm::vec3 acceleration;
-    glm::vec3 forwardDirection; 
-    float wingAngle;            
+    glm::vec3 forwardDirection;
+    float wingAngle;
     float wingSpeed;
 
     Boid(glm::vec3 startPos) {
@@ -88,7 +88,7 @@ struct Boid {
         velocity = glm::vec3((float)(rand()%10-5), 0.0f, (float)(rand()%10-5));
         if(glm::length(velocity) < 0.1f) velocity = glm::vec3(0,0,1);
         velocity = glm::normalize(velocity) * MIN_SPEED;
-        
+
         forwardDirection = glm::normalize(velocity);
         wingAngle = (float)(rand() % 100);
         wingSpeed = 15.0f + (float)(rand() % 10);
@@ -115,7 +115,6 @@ const int SCR_HEIGHT = 600;
 
 // Câmera
 int activeCameraMode = 0;
-// const float TOWER_HEIGHT = 80.0f; // Movido para o topo
 
 // Alvos da Câmera (Real vs Suave)
 glm::vec3 flockCenter(0.0f);
@@ -129,6 +128,12 @@ glm::vec3 leaderInputDirection(0.0f);
 unsigned int skyQuadVAO = 0;
 unsigned int skyQuadVBO = 0;
 unsigned int skyProgram = 0;
+
+// --- PAUSE / DEBUG / STEP
+bool simulationPaused = false;      
+bool debugMode = false;             
+bool stepRequested = false;         
+bool stepConsumed = false;          
 
 void FramebufferSizeCallback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
@@ -299,7 +304,7 @@ glm::vec3 SteerTowards(Boid& b, glm::vec3 target) {
     return steer;
 }
 
-void UpdateFlock(float dt) {
+void UpdateFlock(float dt, bool debugPrint = false) {
     // --- FÍSICA DO LÍDER (MOVIMENTO SUAVE E RÁPIDO) ---
     if (glm::length(leaderInputDirection) > 0.0f) {
         leaderBoid.acceleration = glm::normalize(leaderInputDirection) * LEADER_THRUST;
@@ -326,7 +331,8 @@ void UpdateFlock(float dt) {
     glm::vec3 centerSum(0.0f);
     glm::vec3 velocitySum(0.0f);
 
-    for (auto& b : flock) {
+    for (size_t bi = 0; bi < flock.size(); ++bi) {
+        Boid &b = flock[bi];
         b.acceleration = glm::vec3(0.0f);
 
         // --- 1. CÁLCULO DAS FORÇAS DE BANDO E LÍDER ---
@@ -362,27 +368,26 @@ void UpdateFlock(float dt) {
         }
 
         glm::vec3 steerGoal = SteerTowards(b, leaderBoid.position);
-        
+
         // --- 2. CÁLCULO DAS FORÇAS DE OBSTÁCULO ---
         glm::vec3 steerFloor(0.0f);
-        if (b.position.y < GROUND_AVOID_HEIGHT) { // Use a constante
+        if (b.position.y < GROUND_AVOID_HEIGHT) { 
             glm::vec3 desired = b.velocity;
             desired.y = MAX_SPEED;
             steerFloor = desired - b.velocity;
         }
 
-        // --- NOVO: Cálculo da Força de Obstáculo (Contorno) ---
+        // --- Cálculo da Força de Obstáculo (Contorno) ---
         glm::vec3 steerObstacle(0.0f);
         float distToTowerCenter = glm::length(glm::vec2(b.position.x, b.position.z));
-        
+
         if (distToTowerCenter < OBSTACLE_AVOID_RADIUS && b.position.y < TOWER_HEIGHT)
         {
-            // Vetor de "empurrão" para fora, perpendicular
+
             glm::vec3 pushDirection = glm::normalize(glm::vec3(b.position.x, 0.0f, b.position.z));
-            // A força é maior quanto mais perto
             float penetration = (OBSTACLE_AVOID_RADIUS - distToTowerCenter);
-            float strength = penetration / (OBSTACLE_AVOID_RADIUS - TOWER_RADIUS); // Normaliza (0-1)
-            steerObstacle = pushDirection * MAX_SPEED * strength; 
+            float strength = glm::clamp(penetration / (OBSTACLE_AVOID_RADIUS - TOWER_RADIUS), 0.0f, 1.0f); // Normaliza (0-1)
+            steerObstacle = (pushDirection + glm::vec3(0.0f, 0.3f, 0.0f)) * MAX_SPEED * strength;
         }
         // ----------------------------------------------------
 
@@ -392,10 +397,10 @@ void UpdateFlock(float dt) {
         b.acceleration += steerCoh * WEIGHT_COHESION;
         b.acceleration += steerGoal * WEIGHT_GOAL;
         b.acceleration += steerFloor * WEIGHT_AVOID_FLOOR;
-        b.acceleration += steerObstacle * WEIGHT_AVOID_OBSTACLE; // ADICIONA A FORÇA DA TORRE
+        b.acceleration += steerObstacle * WEIGHT_AVOID_OBSTACLE; 
 
         // --- 4. APLICA FÍSICA ---
-        b.acceleration = limitVector(b.acceleration, MAX_FORCE * 2.0f); // Limite geral (permite picos para desviar)
+        b.acceleration = limitVector(b.acceleration, MAX_FORCE * 2.0f); 
         b.velocity += b.acceleration * dt * 5.0f;
         b.velocity = limitVector(b.velocity, MAX_SPEED);
 
@@ -405,6 +410,15 @@ void UpdateFlock(float dt) {
         b.position += b.velocity * dt;
         b.wingAngle += b.wingSpeed * dt;
         b.forwardDirection = glm::normalize(b.velocity);
+
+        float distToTower = glm::length(glm::vec2(b.position.x, b.position.z));
+        if (distToTower < (TOWER_RADIUS - 0.2f)) {
+
+            glm::vec3 pushOut = glm::normalize(glm::vec3(b.position.x, 0.0f, b.position.z));
+            b.position.x = pushOut.x * (TOWER_RADIUS + 0.5f);
+            b.position.z = pushOut.z * (TOWER_RADIUS + 0.5f);
+            b.velocity = glm::normalize(glm::vec3(pushOut.x, 0.2f, pushOut.z)) * (MIN_SPEED + 1.0f);
+        }
 
         centerSum += b.position;
         velocitySum += b.velocity;
@@ -426,7 +440,19 @@ void UpdateFlock(float dt) {
     if (glm::length(flockAverageVelocity) > 0.1f) {
         smoothFlockVelocity = glm::mix(smoothFlockVelocity, glm::normalize(flockAverageVelocity), smoothFactor);
     }
-    // ------------------------------------
+
+    // --- DEBUG PRINT (opcional) ---
+    if (debugPrint) {
+        std::cout << "DEBUG: flock size = " << flock.size() << ", leader pos = ("
+                  << leaderBoid.position.x << ", " << leaderBoid.position.y << ", " << leaderBoid.position.z << ")\n";
+        size_t limit = std::min((size_t)5, flock.size());
+        for (size_t i = 0; i < limit; ++i) {
+            const Boid &b = flock[i];
+            std::cout << "  Boid[" << i << "] pos=("
+                      << b.position.x << "," << b.position.y << "," << b.position.z
+                      << ") vel=(" << b.velocity.x << "," << b.velocity.y << "," << b.velocity.z << ")\n";
+        }
+    }
 }
 
 
@@ -445,13 +471,44 @@ void ProcessInput(GLFWwindow *window) {
     if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS) activeCameraMode = 1;
     if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS) activeCameraMode = 2;
     if (glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS) activeCameraMode = 3;
-    // --------------------------------
+
+    // --- PAUSE / DEBUG / STEP  ---
+    static bool btnP = false;
+    if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS) {
+        if (!btnP) {
+            simulationPaused = !simulationPaused;
+            std::cout << "[SIM] Paused: " << (simulationPaused ? "YES" : "NO") << std::endl;
+            stepRequested = false;
+            stepConsumed = false;
+            btnP = true;
+        }
+    } else btnP = false;
+
+    static bool btnO = false;
+    if (glfwGetKey(window, GLFW_KEY_O) == GLFW_PRESS) {
+        if (!btnO) {
+            debugMode = !debugMode;
+            std::cout << "[SIM] Debug mode: " << (debugMode ? "ON" : "OFF") << std::endl;
+            btnO = true;
+        }
+    } else btnO = false;
+
+    static bool btnN = false;
+    if (glfwGetKey(window, GLFW_KEY_N) == GLFW_PRESS) {
+        if (!btnN) {
+            stepRequested = true;
+            stepConsumed = false;
+            std::cout << "[SIM] Single-step requested\n";
+            btnN = true;
+        }
+    } else btnN = false;
 
     // Adicionar/Remover Boids
     static bool btnPlus = false;
     if (glfwGetKey(window, GLFW_KEY_EQUAL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_KP_ADD) == GLFW_PRESS) {
         if (!btnPlus) {
             flock.push_back(Boid(leaderBoid.position + glm::vec3(rand()%5, rand()%5, rand()%5)));
+            std::cout << "[SIM] Added boid, new count = " << flock.size() << std::endl;
             btnPlus = true;
         }
     } else btnPlus = false;
@@ -459,14 +516,16 @@ void ProcessInput(GLFWwindow *window) {
     static bool btnMinus = false;
     if (glfwGetKey(window, GLFW_KEY_MINUS) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS) {
         if (!btnMinus) {
-            if(!flock.empty()) flock.pop_back();
+            if(!flock.empty()) {
+                flock.pop_back();
+                std::cout << "[SIM] Removed boid, new count = " << flock.size() << std::endl;
+            }
             btnMinus = true;
         }
     } else btnMinus = false;
 }
 
 // --- UPDATE & RENDER ---
-
 void GameWindow::Update() {
     float currentFrame = (float)glfwGetTime();
     deltaTime = currentFrame - lastFrame;
@@ -474,14 +533,22 @@ void GameWindow::Update() {
     if (deltaTime > 0.1f) deltaTime = 0.1f;
 
     ProcessInput(this->windowHandle);
-    UpdateFlock(deltaTime);
+
+    if (simulationPaused) {
+        if (stepRequested && !stepConsumed) {
+            UpdateFlock(deltaTime, debugMode); 
+            stepConsumed = true;
+        }
+    } else {
+        UpdateFlock(deltaTime, false);       
+    }
+
     s.ReloadFromFile();
 }
 
 void GameWindow::Render() {
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClearColor(0.10f, 0.20f, 0.45f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
 
     if (skyProgram != 0) {
 
@@ -491,10 +558,10 @@ void GameWindow::Render() {
         glUseProgram(skyProgram);
 
         int u_mode = glGetUniformLocation(skyProgram, "u_mode");
-        if (u_mode != -1) glUniform1i(u_mode, 0); 
+        if (u_mode != -1) glUniform1i(u_mode, 0);
 
         glBindVertexArray(skyQuadVAO);
-        glDrawArrays(GL_TRIANGLES, 0, 3); 
+        glDrawArrays(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
 
         glDepthMask(GL_TRUE);
@@ -526,16 +593,18 @@ void GameWindow::Render() {
     else
         avgFlockDir = glm::normalize(avgFlockDir);
 
+    glm::vec3 eye;
+
     switch(activeCameraMode) {
         case 1: {
-            glm::vec3 eye = glm::vec3(0.0f, TOWER_HEIGHT + 2.0f, 0.1f);
+            eye = glm::vec3(0.0f, TOWER_HEIGHT + 2.0f, 0.1f);
             view = glm::lookAt(eye, center, up);
             break;
         }
         case 2: {
             float distance = 30.0f;
             float height = 10.0f;
-            glm::vec3 eye = center - (avgFlockDir * distance) + glm::vec3(0.0f, height, 0.0f);
+            eye = center - (avgFlockDir * distance) + glm::vec3(0.0f, height, 0.0f);
             view = glm::lookAt(eye, center, up);
             break;
         }
@@ -543,14 +612,14 @@ void GameWindow::Render() {
             float distance = 30.0f;
             float height = 5.0f;
             glm::vec3 rightDir = glm::normalize(glm::cross(avgFlockDir, up));
-            glm::vec3 eye = center + (rightDir * distance) + glm::vec3(0.0f, height, 0.0f);
+            eye = center + (rightDir * distance) + glm::vec3(0.0f, height, 0.0f);
             view = glm::lookAt(eye, center, up);
             break;
         }
         default:
         case 0: {
             glm::vec3 offset = glm::vec3(0, 30, 60);
-            glm::vec3 eye = center + offset;
+            eye = center + offset;
             view = glm::lookAt(eye, center, up);
             break;
         }
@@ -564,9 +633,6 @@ void GameWindow::Render() {
     s.setVec3("objectColor", 0.2f, 0.4f, 0.2f);
     glBindVertexArray(VAO_Floor);
     glDrawArrays(GL_TRIANGLES, 0, 6);
-
-
-    s.setBool("useGroundGradient", false);
 
     // --- torre ---
     s.setVec3("objectColor", 0.0f, 0.05f, 0.2f);
@@ -600,8 +666,15 @@ void GameWindow::Render() {
         DrawBoidParts(b, boidM, false, true);
     }
 
-    // HUD
-    ImGui::Begin("Debug");
+    // HUD / Debug window
+    ImGui::SetNextWindowSize(ImVec2(250, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints(
+        ImVec2(250, 0),
+        ImVec2(250, FLT_MAX)
+    );
+
+    ImGui::SetNextWindowCollapsed(true, ImGuiCond_Once);
+    ImGui::Begin("Debug", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
     std::string camMode;
     switch(activeCameraMode) {
         case 1: camMode = "Torre (1)"; break;
@@ -611,7 +684,10 @@ void GameWindow::Render() {
     }
     ImGui::Text("Camera: %s", camMode.c_str());
     ImGui::Text("Boids: %d", (int)flock.size());
-    ImGui::Text("Lider Pos: %.1f %.1f %.1f",
+    ImGui::Text("Simulation: %s", simulationPaused ? "PAUSED" : "RUNNING");
+    ImGui::Text("Debug Mode: %s", debugMode ? "ON" : "OFF");
+    ImGui::Text("Step requested: %s", stepRequested ? "YES" : "NO");
+    ImGui::Text("Leader Pos: %.1f %.1f %.1f",
         leaderBoid.position.x,
         leaderBoid.position.y,
         leaderBoid.position.z);
@@ -619,6 +695,17 @@ void GameWindow::Render() {
         smoothFlockCenter.x,
         smoothFlockCenter.y,
         smoothFlockCenter.z);
+
+    if (ImGui::Button("Add Boid (+)")) {
+        flock.push_back(Boid(leaderBoid.position + glm::vec3(rand()%5, rand()%5, rand()%5)));
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Remove Boid (-)")) {
+        if (!flock.empty()) flock.pop_back();
+    }
+
+    ImGui::Separator();
+    ImGui::TextWrapped("Controls: P = Pause/Unpause (while paused N = single-step).\nO = toggle debug printing. \n+ / - or buttons to add/remove boids during pause or run.");
     ImGui::End();
 
     ImGui::Render();
@@ -628,8 +715,6 @@ void GameWindow::Render() {
 }
 
 // --- BOILERPLATE ---
-
-
 
 void GameWindow::Initialize() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
