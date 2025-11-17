@@ -13,7 +13,7 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/vector_angle.hpp>
 
-// Auxiliar simples para compilar shader usado para o quad do céu 
+// Funções auxiliares do shader do céu
 static unsigned int CompileShaderFromSource(unsigned int type, const char* src) {
     unsigned int id = glCreateShader(type);
     glShaderSource(id, 1, &src, nullptr);
@@ -44,24 +44,33 @@ static unsigned int CreateProgramFromSrc(const char* vsSrc, const char* fsSrc) {
     return prog;
 }
 
+// ---  OBSTÁCULO
+const float TOWER_RADIUS = 15.0f; 
+const float TOWER_HEIGHT = 80.0f;
+const float GROUND_AVOID_HEIGHT = 5.0f;
+const float OBSTACLE_AVOID_RADIUS = TOWER_RADIUS + 2.0f; 
+// ------------------------------------------
+
 // --- TUNING: BOIDS ÁGEIS ---
 const float PERCEPTION_RADIUS = 12.0f; 
 const float SEPARATION_RADIUS = 4.0f;   
 const float MAX_SPEED = 10.0f;          
 const float MIN_SPEED = 4.0f;
-const float MAX_FORCE = 3.0f;           
+const float MAX_FORCE = 2.5f;           
 
 // PESOS
 const float WEIGHT_SEPARATION = 5.0f;   
-const float WEIGHT_ALIGNMENT  = 1.5f;
+const float WEIGHT_ALIGNMENT  = 1.5f;   
 const float WEIGHT_COHESION   = 1.5f;   
-const float WEIGHT_GOAL       = 5.0f;
-const float WEIGHT_AVOID_FLOOR= 10.0f;
+const float WEIGHT_GOAL       = 5.0f;   
+const float WEIGHT_AVOID_FLOOR= 10.0f; 
+// NOVO: Peso da força de desvio (alta prioridade)
+const float WEIGHT_AVOID_OBSTACLE = 15.0f; 
 
 // --- Parâmetros do líder ---
-const float LEADER_THRUST = 80.0f;
-const float LEADER_MAX_SPEED = 10.0f; 
-const float LEADER_DAMPING = 0.96f;
+const float LEADER_THRUST = 80.0f;    
+const float LEADER_MAX_SPEED = 9.0f; 
+const float LEADER_DAMPING = 0.96f;   
 
 // --- Câmera ---
 const float CAMERA_SMOOTH_SPEED = 2.0f;
@@ -70,8 +79,8 @@ struct Boid {
     glm::vec3 position;
     glm::vec3 velocity;
     glm::vec3 acceleration;
-    glm::vec3 forwardDirection;
-    float wingAngle;
+    glm::vec3 forwardDirection; 
+    float wingAngle;            
     float wingSpeed;
 
     Boid(glm::vec3 startPos) {
@@ -79,7 +88,7 @@ struct Boid {
         velocity = glm::vec3((float)(rand()%10-5), 0.0f, (float)(rand()%10-5));
         if(glm::length(velocity) < 0.1f) velocity = glm::vec3(0,0,1);
         velocity = glm::normalize(velocity) * MIN_SPEED;
-
+        
         forwardDirection = glm::normalize(velocity);
         wingAngle = (float)(rand() % 100);
         wingSpeed = 15.0f + (float)(rand() % 10);
@@ -106,7 +115,7 @@ const int SCR_HEIGHT = 600;
 
 // Câmera
 int activeCameraMode = 0;
-const float TOWER_HEIGHT = 60.0f;
+// const float TOWER_HEIGHT = 80.0f; // Movido para o topo
 
 // Alvos da Câmera (Real vs Suave)
 glm::vec3 flockCenter(0.0f);
@@ -201,7 +210,7 @@ void CreateCommonGeometry() {
     // 4. CONE (com normais)
     std::vector<float> coneV;
     int segments = 32;
-    float radius = 10.0f; // Raio largo
+    float radius = TOWER_RADIUS; // ALTERADO: Usa a constante global
     float height = TOWER_HEIGHT;
     float slopeY = radius / height;
     for(int i=0; i<segments; i++) {
@@ -320,6 +329,7 @@ void UpdateFlock(float dt) {
     for (auto& b : flock) {
         b.acceleration = glm::vec3(0.0f);
 
+        // --- 1. CÁLCULO DAS FORÇAS DE BANDO E LÍDER ---
         glm::vec3 separation(0.0f), alignment(0.0f), cohesion(0.0f);
         int neighbors = 0;
         for (const auto& other : flock) {
@@ -352,20 +362,40 @@ void UpdateFlock(float dt) {
         }
 
         glm::vec3 steerGoal = SteerTowards(b, leaderBoid.position);
+        
+        // --- 2. CÁLCULO DAS FORÇAS DE OBSTÁCULO ---
         glm::vec3 steerFloor(0.0f);
-        if (b.position.y < 5.0f) {
+        if (b.position.y < GROUND_AVOID_HEIGHT) { // Use a constante
             glm::vec3 desired = b.velocity;
             desired.y = MAX_SPEED;
             steerFloor = desired - b.velocity;
         }
 
+        // --- NOVO: Cálculo da Força de Obstáculo (Contorno) ---
+        glm::vec3 steerObstacle(0.0f);
+        float distToTowerCenter = glm::length(glm::vec2(b.position.x, b.position.z));
+        
+        if (distToTowerCenter < OBSTACLE_AVOID_RADIUS && b.position.y < TOWER_HEIGHT)
+        {
+            // Vetor de "empurrão" para fora, perpendicular
+            glm::vec3 pushDirection = glm::normalize(glm::vec3(b.position.x, 0.0f, b.position.z));
+            // A força é maior quanto mais perto
+            float penetration = (OBSTACLE_AVOID_RADIUS - distToTowerCenter);
+            float strength = penetration / (OBSTACLE_AVOID_RADIUS - TOWER_RADIUS); // Normaliza (0-1)
+            steerObstacle = pushDirection * MAX_SPEED * strength; 
+        }
+        // ----------------------------------------------------
+
+        // --- 3. SOMA PONDERADA DE TODAS AS FORÇAS ---
         b.acceleration += steerSep * WEIGHT_SEPARATION;
         b.acceleration += steerAli * WEIGHT_ALIGNMENT;
         b.acceleration += steerCoh * WEIGHT_COHESION;
         b.acceleration += steerGoal * WEIGHT_GOAL;
         b.acceleration += steerFloor * WEIGHT_AVOID_FLOOR;
+        b.acceleration += steerObstacle * WEIGHT_AVOID_OBSTACLE; // ADICIONA A FORÇA DA TORRE
 
-        b.acceleration = limitVector(b.acceleration, MAX_FORCE);
+        // --- 4. APLICA FÍSICA ---
+        b.acceleration = limitVector(b.acceleration, MAX_FORCE * 2.0f); // Limite geral (permite picos para desviar)
         b.velocity += b.acceleration * dt * 5.0f;
         b.velocity = limitVector(b.velocity, MAX_SPEED);
 
@@ -543,11 +573,11 @@ void GameWindow::Render() {
     glBindVertexArray(VAO_Cone);
     glDrawArrays(GL_TRIANGLES, 0, coneVertexCount);
 
-    // // --- grid suave ---
-    // s.setBool("useLighting", false);
-    // s.setVec3("objectColor", 0.1f, 0.15f, 0.1f); // bem discreto
-    // glBindVertexArray(VAO_Grid);
-    // glDrawArrays(GL_LINES, 0, gridVertexCount);
+    // --- grid suave ---
+    s.setBool("useLighting", false);
+    s.setVec3("objectColor", 0.1f, 0.15f, 0.1f); // bem discreto
+    glBindVertexArray(VAO_Grid);
+    glDrawArrays(GL_LINES, 0, gridVertexCount);
 
     // --- boid líder ---
     s.setBool("useLighting", true);
@@ -616,9 +646,9 @@ void GameWindow::LoadContent() {
     CreateCommonGeometry();
     glEnable(GL_DEPTH_TEST);
 
-    leaderBoid.position = glm::vec3(0, 15, 30.0f);
+    // ALTERADO: Posição inicial do líder movida para fora da torre (que tem raio 15)
+    leaderBoid.position = glm::vec3(0, 15, TOWER_RADIUS + 15.0f); // 15 + 15 = 30
 
-    // --- NOVO: Inicializa a câmera suave ---
     smoothFlockCenter = leaderBoid.position;
 
     flock.clear();
@@ -639,7 +669,6 @@ void GameWindow::LoadContent() {
         }
     )";
 
-    // Fragment shader: simple vertical blue gradient (A - natural blue)
     const char* skyFS = R"(
         #version 330 core
         out vec4 FragColor;
@@ -648,7 +677,6 @@ void GameWindow::LoadContent() {
         const vec3 topColor = vec3(0.10, 0.20, 0.45);
         const vec3 bottomColor = vec3(0.55, 0.75, 0.95);
         void main() {
-            // ease the interpolation a bit for nicer curve
             float t = smoothstep(0.0, 1.0, vUV.y);
             vec3 col = mix(bottomColor, topColor, t);
             FragColor = vec4(col, 1.0);
@@ -657,7 +685,6 @@ void GameWindow::LoadContent() {
 
     skyProgram = CreateProgramFromSrc(skyVS, skyFS);
 
-    // Fullscreen single triangle (covers whole screen)
     float quadVerts[] = {
         -1.0f, -1.0f,
          3.0f, -1.0f,
@@ -679,7 +706,6 @@ void GameWindow::Unload() {
     glDeleteVertexArrays(1, &VAO_Cone);  glDeleteBuffers(1, &VBO_Cone);
     glDeleteVertexArrays(1, &VAO_Pyramid); glDeleteBuffers(1, &VBO_Pyramid);
 
-    // cleanup sky resources
     if (skyQuadVAO) glDeleteVertexArrays(1, &skyQuadVAO);
     if (skyQuadVBO) glDeleteBuffers(1, &skyQuadVBO);
     if (skyProgram) glDeleteProgram(skyProgram);
