@@ -691,7 +691,7 @@ void GameWindow::Render() {
     }
 
     ImGui::Separator();
-    ImGui::TextWrapped("Controls: P = Pause/Unpause (while paused N = single-step).\nO = toggle debug printing. \n+ / - or buttons to add/remove boids during pause or run.");
+    ImGui::TextWrapped("Controls: P = Pause/Unpause (while paused N = single-step).\n+ / - or buttons to add/remove boids during pause or run.");
     ImGui::End();
 
     ImGui::Render();
